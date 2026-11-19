@@ -1,0 +1,14 @@
+interface:
+  display_name: Requirement Refinement
+  short_description: Find edge cases and decisions before implementation
+  default_prompt: Use $requirement-refinement to analyze this requirement against
+    the current project and list the edge cases and decisions we need to settle.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

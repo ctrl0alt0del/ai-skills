@@ -1,0 +1,15 @@
+interface:
+  display_name: Behavior Graph Builder
+  short_description: Review application behavior before generating its graph
+  default_prompt: Use $behavior-knowledge-graph-builder to investigate this project,
+    start an interactive review of its behavior graph, collect my feedback, and generate
+    the final graph only after I approve the settled version.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

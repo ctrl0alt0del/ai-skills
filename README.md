@@ -14,6 +14,13 @@ Reusable skills for understanding application behavior and refining requirements
 The behavior graph can be supplied as context to requirement refinement.
 The skills use different JSON schemas and have separate validators.
 
+## Development and AI handoff
+
+Read [HANDOFF.md](HANDOFF.md) before continuing development in a new thread or AI
+session. It records the original goals, verified research references, design
+decisions, implementation boundaries, graph/report contracts, validation status,
+known limitations, and suggested next work.
+
 ## Installation
 
 Copy either directory from `skills/` into your local Codex skills directory

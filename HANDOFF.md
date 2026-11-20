@@ -355,7 +355,8 @@ For a viewer check, initialize a new temporary session and serve it using the co
 | --- | --- |
 | Inspectable in this repository | Both workflows, strict validators, builder runtime/frontend, a fictional graph fixture, and the refinement role/artifact workflow with regression tests |
 | Checked again while preparing this handoff | Source layout and contracts, Python/JavaScript syntax, and validation of the bundled graph |
-| Checked for the investigator/judge update | Refinement artifact tests, including the complete CLI sequence and compatibility with the existing report validator; stale-input, role, candidate-accounting, source-check, fallback, and output-preservation gates |
+| Checked for the investigator/judge update | All 22 refinement artifact tests passed, including the complete CLI sequence and compatibility with the existing report validator; stale-input, role, candidate-accounting, source-check, fallback, and output-preservation gates |
+| Live refinement trial, 2026-11-20 | A fresh coordinator launched distinct business, failure, and judge contexts against a fixed seven-file fictional booking project. The investigators produced 13 and 14 candidates; the judge accounted for all 27 and consolidated them into 18 findings: 6 decisions, 7 investigations, and 5 regressions. Finalization and the existing report validator passed; all seven source files remained unchanged. |
 | Reported by the original development session | Isolated checks for malformed input, reference integrity, restart persistence, concurrent edits, stale writes, annotation reopening, approval invalidation, export gates/manifests, HTTP guards, and nonsemantic presence |
 | Reported by the original development session | A small fictional booking/cancellation trial produced an initial proposal with open questions and stopped before final export |
 | Not established | A repeatable builder test suite or CI; a successful live browser walkthrough; benchmark precision/recall or exhaustive edge-case coverage; automatic graph-to-report interoperability |
@@ -364,6 +365,13 @@ The historical builder checks and booking trial were development exercises. Thei
 temporary harnesses and fixtures are not committed here. The newly committed
 refinement tests cover artifact mechanics; they do not replace a behavioral
 evaluation corpus or establish that agents reason accurately.
+
+The separate live refinement trial exercised actual host subagent launches rather
+than fixture actor declarations. The judge recorded seven reopened source checks;
+its candidate dispositions were 3 accept, 5 revise, 19 merge, and 0 reject. That
+trial's project and reports were temporary development artifacts, not a committed
+benchmark. It demonstrates one successful end-to-end invocation, not precision,
+recall, exhaustive coverage, or source-check authentication by the validator.
 
 The original browser walkthrough was blocked by the available environment's reachability and browser restrictions. Static JavaScript checks and HTTP tests do not establish visual layout, usability, keyboard operation, or a working private-preview deployment.
 

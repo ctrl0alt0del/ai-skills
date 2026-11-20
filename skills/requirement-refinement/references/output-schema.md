@@ -4,7 +4,8 @@
 
 Use this order, shortening sections when the user requests brevity:
 
-1. Requirement interpretation, assumptions, analysis mode, and project revision.
+1. Requirement interpretation, assumptions, analysis mode, project revision, and
+   actual execution mode (isolated investigators and judge, or disclosed fallback).
 2. Priority table: ID, category, capability, question/check, priority, suggested owner.
 3. Details for consequential findings: scenario, affected behavior, consequence,
    evidence IDs and locations, inference, and options where useful.
@@ -16,6 +17,13 @@ Group findings by capability; label decisions, investigations, and regression
 checks. Derive any counts from the JSON, and keep IDs consistent across formats.
 Use a sensible number of findings, not a quota. Preserve consequential findings
 even when they exceed an arbitrary top-ten limit.
+
+The final JSON report remains version `1.0`. Keep multi-agent identities, packet
+digests, candidate dispositions, and source-check records in the companion
+`review.json` described in [multi-agent-workflow.md](multi-agent-workflow.md).
+Do not add workflow fields to `analysis` or other report objects: the existing
+validator rejects extra fields. Render Markdown from the validated judge report
+and preserve its finding/evidence IDs and conclusions.
 
 ## JSON structure
 

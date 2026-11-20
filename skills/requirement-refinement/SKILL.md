@@ -3,17 +3,20 @@ name: requirement-refinement
 description: >-
   Analyze a proposed feature or requirement change against available specifications,
   code, contracts, and tests. Identify affected behaviors, concrete edge cases,
-  unresolved decisions, and regression risks for backlog refinement or a Three
-  Amigos meeting. Use when asked what needs clarification, what could break, or
-  which cases must be settled before implementing a requirement.
+  unresolved decisions, and regression risks using two investigators and an
+  evidence judge for backlog refinement or a Three Amigos meeting. Use when asked
+  what needs clarification, what could break, or which cases must be settled
+  before implementing a requirement.
 ---
 
 # Requirement Refinement
 
 Turn a requirement into a prioritized, evidence-based agenda of decisions and
-investigations. Use dependency-aware retrieval, complementary analysis passes,
-and a separate evidence review. Treat this as a practical workflow inspired by
-requirements impact analysis, not an implementation or evaluation of a paper.
+investigations. Coordinate a business investigator and a failure investigator in
+fresh contexts, then give their completed results to a fresh evidence judge.
+Use dependency-aware retrieval and trace every candidate to a review outcome.
+Treat this as a practical workflow inspired by requirements impact analysis,
+not an implementation or evaluation of a paper.
 
 ## Operating rules
 
@@ -83,32 +86,59 @@ reason, or recorded as blind spots. If time/context/access limits stop expansion
 record the remaining frontier. Do not impose an arbitrary hop limit and call the
 result complete.
 
-## 4. Generate scenarios in complementary passes
+## 4. Run two isolated investigators
 
-Read [edge-case-taxonomy.md](references/edge-case-taxonomy.md). Activate dimensions
-that match the actual requirement and dependency types.
+Read [multi-agent-workflow.md](references/multi-agent-workflow.md) for the host-tool
+orchestration, artifact contracts, and commands. Use
+`scripts/review_workflow.py` to freeze a common evidence packet, validate each
+investigation, and assemble judge input. Prepare the packet from a valid report
+`1.0` seed with `findings: []`, preserving the original requirement, analysis scope,
+source evidence, dependencies, settled constraints, and remaining frontier.
 
-- **Behavior pass:** inspect eligibility, state lifecycle, business invariants,
-  permissions, alternative journeys, UX states, cross-feature consequences, and
-  inverse operations.
-- **Failure pass:** inspect timing, concurrent actions, duplicates, partial success,
-  retries, event ordering, compatibility, recovery, and rollout.
+Use the host's real subagent tools to start both investigators in fresh contexts:
 
-Use isolated agents for these passes when supported and worthwhile. Give each the
-requirement and the same compact evidence packet, not the other's findings. If
-agents are unavailable, perform separate passes and do not claim independence.
+- [Business investigator](references/business-investigator.md): eligibility,
+  lifecycle, business invariants, permissions, UX, cross-feature consequences,
+  and inverse operations.
+- [Failure investigator](references/failure-investigator.md): concurrency,
+  duplicates, timing, partial success, retries, ordering, compatibility, recovery,
+  and rollout.
 
-Construct short counterexamples: initial state, sequence/interleaving of actions,
-and the point at which expected behavior becomes ambiguous or conflicts with a
-known rule. For each candidate trace: proposed change → affected assumption or
-transition → dependent behavior → observable consequence. Include meaningful
-boundaries and plausible counterexamples to an apparently successful flow.
+Give both the same frozen packet and authorized source access, their role guide,
+the [taxonomy](references/edge-case-taxonomy.md), report contract, actual host agent
+identity, and their own output path. Do not pass the coordinator's candidate
+answers or the other investigator's findings. Prefer parallel execution; limited
+capacity can be handled by launching fresh contexts sequentially. The coordinator
+must not substitute its own generation for an available investigator.
 
-## 5. Challenge and consolidate
+Require concrete initial states, action sequences/interleavings, and observable
+consequences. Each candidate must connect the proposed change to an affected
+assumption or transition and then to a dependent behavior. Investigators may
+retrieve additional sources within scope, recording them in their own evidence
+ledgers. Keep report-local IDs separate; the judge uses qualified candidate IDs
+such as `business:Q-001` and `failure:Q-001`.
 
-Review candidates separately from generation. Reopen cited sources as necessary.
-Agent agreement is not evidence. Check whether each source supports the specific
-claim and whether current approved guidance already resolves the question.
+Wait for both complete results and validate them before assembling judge input.
+A failed investigator is not an empty finding set. Follow the documented bounded
+recovery path. If isolation is unavailable or the user explicitly requests one
+agent, use and disclose `sequential-fallback` with its actual reason; never claim
+three independent agents ran. If Python or artifact storage is unavailable,
+continue the reasoning workflow and disclose which validation/audit steps could
+not be run instead of inventing successful tool calls or digests.
+
+## 5. Start a fresh evidence judge
+
+Start a third fresh context using [evidence-judge.md](references/evidence-judge.md)
+only after both investigations are complete. Give it the assembled judge input,
+authorized sources, report contract, and its own output path. The judge must be
+distinct from both investigators and the coordinator in isolated-agent mode.
+
+Require the judge to reopen relevant sources and record source checks. Agent
+agreement is not evidence. Check whether a source supports the specific claim
+and whether current approved guidance already resolves the question. Allow
+focused evidence requests when they can change a consequential outcome; preserve
+inaccessible or conflicting evidence as a concrete investigation. Do not loop
+indefinitely or manufacture a definitive answer when evidence remains missing.
 
 Admit a finding only when it has a concrete scenario, a plausible change-related
 connection, and a material decision, investigation, or regression consequence.
@@ -138,8 +168,20 @@ Use priorities with an explanation, not a numerical score:
 ## 6. Deliver the refinement report
 
 Read [output-schema.md](references/output-schema.md). Lead with interpretation,
-analysis mode, and the highest-priority questions. Group findings by capability
-and distinguish decisions, investigations, and regression checks.
+analysis mode, execution mode, and the highest-priority questions. Group findings
+by capability and distinguish decisions, investigations, and regression checks.
+
+Use `review_workflow.py finalize` with the current packet, both investigations,
+and judgment. It checks digest bindings, role identities, every candidate's
+disposition, and the final report's references before creating `refinement.json`
+and the companion `review.json` in a new output directory. The latter preserves
+the workflow audit; it is separate from the unchanged report `1.0` schema.
+
+Every candidate must be accepted, revised, merged, or rejected with an explanation.
+Every final finding must trace to candidates or an explicit judge addition.
+Report merged IDs accurately and preserve material disagreement in findings or
+coverage. If an investigator result changes, assemble new input and run a fresh
+judge. Do not edit a finalized report to bypass that review.
 
 Include a concise table and expand consequential findings with their scenario,
 affected behavior, consequence, evidence/inference, options where useful, and
@@ -151,6 +193,12 @@ when the host can save artifacts. Respect explicit requests for a shorter answer
 chat-only output, or another format. Keep Markdown and JSON consistent; reference
 the same finding and evidence IDs. Do not create or update application behavior
 documents without a separate request.
+
+Prepare the Markdown from the validated judge report. Disclose the actual
+execution mode and any failed or unavailable steps. The coordinator may improve
+presentation but must return substantive finding changes to the judge. Retain
+the evidence packet, investigations, and review audit under the host's artifact
+rules; do not publish internal review artifacts unless requested.
 
 Validate saved JSON with the bundled script, using the resolved skill directory:
 

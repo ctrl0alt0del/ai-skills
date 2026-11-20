@@ -4,6 +4,13 @@
 
 **Baseline:** reviewed on 2026-11-20 against [commit `20fe0288cc01521a445c289284f3f7af73de4265`](https://github.com/ctrl0alt0del/ai-skills/tree/20fe0288cc01521a445c289284f3f7af73de4265). Recheck the current code before relying on implementation details below. This document records the initial design; the skill instructions, contracts, and implementation must evolve together.
 
+**Implementation update, 2026-11-20:** Requirement Refinement now prescribes two
+isolated investigators followed by a fresh evidence judge when the host supports
+subagents. Dedicated role guides and a deterministic review helper make the
+handoffs explicit and validate their lineage and candidate accounting. The final
+report remains schema `1.0`; execution provenance is saved separately. The host
+launches the agents; no model API runner has been added.
+
 ## Contents
 
 1. [Start here](#1-start-here)
@@ -34,7 +41,7 @@ The two skills have different responsibilities:
 | Behavior Graph Builder | Application code, specifications, contracts, tests, and human knowledge | A reusable, reviewed behavior graph with evidence, coverage limits, and approval history |
 | Requirement Refinement | A proposed requirement plus available project evidence, optionally including a behavior graph | A prioritized agenda of decisions, investigations, and regression checks |
 
-**Implementation boundary:** these are agent workflows with supporting tools. The AI investigates and reasons according to the Markdown instructions. Python implements structural validation and, for the builder, review persistence, serving, and export. There is no bundled autonomous repository analyzer, embedding index, DBSCAN pipeline, or general impact-analysis engine.
+**Implementation boundary:** these are agent workflows with supporting tools. The AI investigates and reasons according to the Markdown instructions. Python implements structural validation, refinement review handoffs/audits, and, for the builder, review persistence, serving, and export. There is no bundled autonomous repository analyzer, embedding index, DBSCAN pipeline, or general impact-analysis engine.
 
 ## 2. Problem and intended outcome
 
@@ -115,7 +122,7 @@ This table records choices expressed by the user or embodied in the current inst
 | Traverse incoming as well as outgoing relationships | Shared-state readers and event consumers are often discoverable through incoming edges. Edge direction must retain its meaning. |
 | Retrieve focused evidence and maintain an unresolved frontier | Work can continue within context limits without silently losing important unexplored branches. |
 | Avoid a fixed hop cutoff or a finding quota | Neither a cluster boundary nor a hop count proves that downstream consequences end there. Real limits must be reported as coverage limits. |
-| Use complementary scenario passes and a separate challenge step | Behavior and failure analysis expose different omissions. Source checking filters unsupported conclusions; agreement between agents is insufficient evidence. |
+| Use two fresh investigators and a fresh judge | Business and failure analysis expose different omissions without sharing initial candidate answers. A third context checks evidence and consolidates their completed results; agreement between agents is insufficient evidence. |
 | Separate decisions, investigations, and regressions | The team should decide undefined policy, investigate missing facts, and test established rules without being asked to approve the same rule again. |
 | Preserve unknowns and accepted gaps | Human review can settle how a limitation is represented without inventing knowledge about an inaccessible service. |
 | Keep browser and chat review in one session | A modality change should not lose feedback, create contradictory copies, or bypass approval. |
@@ -131,17 +138,29 @@ This table records choices expressed by the user or embodied in the current inst
 
 ### Requirement Refinement
 
-The executable support is a report validator; the following algorithm is carried out by the invoking agent.
+The host's agent tools execute the investigation and judgment roles. The report
+validator checks schema `1.0`; `scripts/review_workflow.py` freezes shared context,
+checks role artifacts, and produces the final report plus a review audit.
 
 1. **Frame the change.** Preserve the requirement's wording. Extract actors, triggers, entities, transitions, outcomes, constraints, and scope. Keep omitted decisions as questions.
 2. **Choose the evidence mode.** Record repository-backed, documentation-only, or requirement-only analysis and the inspected revision when available.
 3. **Build an evidence packet.** Read business sources, then relevant implementation, schemas, contracts, tests, UI states, readers, writers, producers, and consumers. Record precise evidence IDs and locations.
 4. **Expand the impact neighborhood.** Reuse an available graph or construct a temporary map. For each connection, explain how this particular change could affect an assumption or transition.
-5. **Generate scenarios in two passes.** The behavior pass covers lifecycle, eligibility, policy, UX, invariants, and inverse operations. The failure pass covers concurrency, duplication, ordering, partial success, retry, recovery, compatibility, and rollout.
-6. **Challenge the candidates.** Reopen sources; reject generic checklist items; merge questions about one underlying decision; split independent decisions.
+5. **Launch two isolated investigators.** Freeze a shared packet with no initial findings. The business investigator covers lifecycle, eligibility, policy, UX, invariants, and inverse operations. The failure investigator covers concurrency, duplication, ordering, partial success, retry, recovery, compatibility, and rollout. Both may inspect authorized sources; neither reads its peer's candidates.
+6. **Launch a fresh judge after both finish.** Reopen sources; reject generic checklist items; merge questions about one underlying decision; split independent decisions. Record one explained verdict for every candidate and explicit provenance for judge-added findings.
 7. **Classify, prioritize, and deliver.** Produce consistent Markdown and JSON, retain settled constraints, disclose blind spots and unexpanded dependencies, and state why analysis stopped.
 
-Independent agents are optional. When used, they receive the same evidence packet without the other pass's findings. Separate passes by one agent must not be described as independent agents.
+Fresh contexts are the default when supported, preferably parallel for the two
+investigators. Limited slots can be handled by launching them sequentially in
+separate contexts. If isolation is unavailable, explicitly requested otherwise,
+or an actual agent failure persists after one fresh retry, start an honestly
+labeled `sequential-fallback` run. Separate passes by one agent are not independent
+agents; separate contexts also do not establish statistical model independence.
+
+See the [coordinator protocol](skills/requirement-refinement/references/multi-agent-workflow.md)
+and the [business](skills/requirement-refinement/references/business-investigator.md),
+[failure](skills/requirement-refinement/references/failure-investigator.md), and
+[judge](skills/requirement-refinement/references/evidence-judge.md) role guides.
 
 A useful finding has a concrete initial state and action sequence, a plausible connection to the change, and a material consequence:
 
@@ -231,6 +250,35 @@ Evidence, dependency, and finding IDs are report-local `E-001`, `D-001`, and `Q-
 
 Copying graph records directly into the report will fail or lose meaning. Both validators reject unexpected fields, so additions require a deliberate compatibility or versioning decision.
 
+### Refinement review artifacts
+
+The multi-agent workflow adds separate envelopes without changing report `1.0`:
+
+| Artifact | Purpose |
+| --- | --- |
+| `refinement-review-packet/1` | Frozen common context, actual coordinator identity, execution mode, run ID, and canonical digest |
+| `refinement-investigation/1` | One business or failure report bound to that packet, with its actual host actor ID |
+| `refinement-judge-input/1` | Both completed investigations and their digests, assembled only after validation |
+| `refinement-judgment/1` | Final report, candidate verdicts, judge additions, and source-check records |
+| `refinement-review/1` | Retained packet, investigations, judgment, execution mode, and digest audit |
+
+Each investigator's E-/D-/Q- identifiers are local. The judge uses qualified
+candidate references such as `business:Q-001` and `failure:Q-001`, then creates
+a coherent final evidence/dependency ledger. Every candidate receives exactly
+one explained disposition; every final finding maps to candidates or an explicit
+judge addition. Shared findings require merge labeling, with an explicit revision
+for a candidate that also splits into multiple findings.
+
+The helper detects stale inputs, missing verdicts, incorrect mappings, reused
+declared actor IDs in isolated mode, and missing source-check records. Actor IDs
+and source checks are recorded declarations, not proof of real context isolation
+or source truth. The coordinator must actually launch the agents using the host.
+
+`finalize` creates `refinement.json` and `review.json` in a new directory. This
+refinement audit has a different schema and purpose from the graph builder's
+file of the same name. The coordinator renders Markdown from the judge's report;
+substantive changes return to the judge rather than bypassing the review.
+
 ### Exported artifacts
 
 | File | Role |
@@ -261,6 +309,10 @@ Complete past graph snapshots remain in the review SQLite database. The export d
 | [refinement SKILL.md](skills/requirement-refinement/SKILL.md) | Evidence retrieval, impact exploration, scenario generation, consolidation |
 | [refinement references](skills/requirement-refinement/references) | Relationship semantics, scenario taxonomy, report schema |
 | [validate-report.py](skills/requirement-refinement/scripts/validate-report.py) | Strict report structure and reference validation |
+| [multi-agent-workflow.md](skills/requirement-refinement/references/multi-agent-workflow.md) | Fresh-context orchestration, artifact contracts, bounded recovery, and honest fallback |
+| [business-investigator.md](skills/requirement-refinement/references/business-investigator.md), [failure-investigator.md](skills/requirement-refinement/references/failure-investigator.md), [evidence-judge.md](skills/requirement-refinement/references/evidence-judge.md) | Dedicated task guides for the three roles |
+| [review_workflow.py](skills/requirement-refinement/scripts/review_workflow.py) | Frozen packets, role/judge artifact validation, candidate accounting, and final report/audit output |
+| [test_refinement_review.py](tests/test_refinement_review.py) | Reproducible regression checks for the refinement artifact workflow |
 | Both `agents/openai.yaml` files | Skill display and invocation metadata |
 
 Builder runtime details that matter when modifying it:
@@ -283,6 +335,8 @@ Run these from the repository root; use the available Python interpreter, such a
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py --help
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py validate --graph skills/behavior-knowledge-graph-builder/assets/example-graph.json
 python3 skills/requirement-refinement/scripts/validate-report.py --help
+python3 skills/requirement-refinement/scripts/review_workflow.py --help
+python3 -m unittest discover -s tests -p 'test_refinement_review.py'
 ```
 
 Validate a newly produced refinement report with:
@@ -299,13 +353,17 @@ For a viewer check, initialize a new temporary session and serve it using the co
 
 | Status | What is established |
 | --- | --- |
-| Inspectable in this repository | Both workflows, strict validators, builder runtime/frontend, and a fictional graph fixture |
+| Inspectable in this repository | Both workflows, strict validators, builder runtime/frontend, a fictional graph fixture, and the refinement role/artifact workflow with regression tests |
 | Checked again while preparing this handoff | Source layout and contracts, Python/JavaScript syntax, and validation of the bundled graph |
+| Checked for the investigator/judge update | Refinement artifact tests, including the complete CLI sequence and compatibility with the existing report validator; stale-input, role, candidate-accounting, source-check, fallback, and output-preservation gates |
 | Reported by the original development session | Isolated checks for malformed input, reference integrity, restart persistence, concurrent edits, stale writes, annotation reopening, approval invalidation, export gates/manifests, HTTP guards, and nonsemantic presence |
 | Reported by the original development session | A small fictional booking/cancellation trial produced an initial proposal with open questions and stopped before final export |
-| Not established | A committed repeatable test suite or CI; a successful live browser walkthrough; benchmark precision/recall or exhaustive edge-case coverage; automatic graph-to-report interoperability |
+| Not established | A repeatable builder test suite or CI; a successful live browser walkthrough; benchmark precision/recall or exhaustive edge-case coverage; automatic graph-to-report interoperability |
 
-The historical checks and booking trial were development exercises. Their temporary harnesses and fixtures are not committed here. They are useful context for what was attempted, not a substitute for reproducible repository tests.
+The historical builder checks and booking trial were development exercises. Their
+temporary harnesses and fixtures are not committed here. The newly committed
+refinement tests cover artifact mechanics; they do not replace a behavioral
+evaluation corpus or establish that agents reason accurately.
 
 The original browser walkthrough was blocked by the available environment's reachability and browser restrictions. Static JavaScript checks and HTTP tests do not establish visual layout, usability, keyboard operation, or a working private-preview deployment.
 
@@ -326,7 +384,7 @@ These are proposed continuation tasks, not already implemented features or instr
 
 ### Priority 1: make current behavior reproducible
 
-1. **Commit meaningful runtime and validator tests plus CI.** Cover invalid references, unresolved notes, pending review, exact-version approval, new-feedback invalidation, changed/removed target reopening, identical proposals, concurrent writes, restart persistence, stale browser edits, heartbeat isolation, HTTP access checks, and export hashes. Use isolated fixtures rather than user approval records.
+1. **Extend regression coverage and add CI.** Refinement artifact gates now have committed tests. Add reproducible builder coverage for invalid references, unresolved notes, pending review, exact-version approval, new-feedback invalidation, changed/removed target reopening, identical proposals, concurrent writes, restart persistence, stale browser edits, heartbeat isolation, HTTP access checks, and export hashes. Use isolated fixtures rather than user approval records.
 2. **Exercise the real browser workflow.** Verify a supported local/private-preview launch, readable graph and list views, annotations, stale-edit recovery, review requests, approval, responsive layout, keyboard interaction, and chat resumption.
 3. **Test export crash recovery.** Simulate interruption around publication and receipt persistence. Define how to recover an orphaned output directory or stale lock without overwriting a valid export.
 

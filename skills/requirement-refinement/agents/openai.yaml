@@ -1,8 +1,9 @@
 interface:
   display_name: Requirement Refinement
-  short_description: Find edge cases and decisions before implementation
-  default_prompt: Use $requirement-refinement to analyze this requirement against
-    the current project and list the edge cases and decisions we need to settle.
+  short_description: Refine with two investigators and an evidence judge
+  default_prompt: Use $requirement-refinement to analyze this requirement with separate
+    business and failure investigators, then an evidence judge, and report the edge
+    cases and decisions we need to settle.
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:

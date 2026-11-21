@@ -456,6 +456,44 @@ class Store:
 
         return self.mutate(expected_version, "resolved", source, operation)
 
+    def edit_annotation(self, annotation_id, changes, source, expected_version):
+        """Edit human-authored content without replacing identity, target, or history."""
+        selected(source, {"ui", "chat", "agent"}, "source")
+        if not isinstance(changes, dict) or not changes or changes.keys() - {"text", "kind"}:
+            raise ReviewError("Annotation edits require text and/or kind; other fields are immutable.")
+        changes = dict(changes)
+        if "text" in changes:
+            changes["text"] = text_value(changes["text"], "text")
+        if "kind" in changes:
+            selected(changes["kind"], KINDS, "kind")
+
+        def operation(state, connection):
+            note = self._note(state, annotation_id)
+            if note["status"] == "deleted":
+                raise ReviewError("Deleted annotations cannot be edited.", 409)
+            previous = json.loads(canonical(note))
+            note.update(changes)
+            note.update(status="open", resolution=None, updated_at=timestamp(), updated_by=source)
+            return {"annotation_id": annotation_id, "previous": previous,
+                    "annotation": json.loads(canonical(note))}
+
+        return self.mutate(expected_version, "annotation_edited", source, operation)
+
+    def delete_annotation(self, annotation_id, source, expected_version):
+        """Tombstone a note; preserve its original content and audit for past reviews."""
+        selected(source, {"ui", "chat", "agent"}, "source")
+
+        def operation(state, connection):
+            note = self._note(state, annotation_id)
+            if note["status"] == "deleted":
+                raise ReviewError("Annotation is already deleted.", 409)
+            previous = json.loads(canonical(note))
+            note.update(status="deleted", deleted_at=timestamp(), deleted_by=source)
+            return {"annotation_id": annotation_id, "previous": previous,
+                    "annotation": json.loads(canonical(note))}
+
+        return self.mutate(expected_version, "annotation_deleted", source, operation)
+
     @staticmethod
     def _note(state, identifier):
         for note in state["annotations"]:
@@ -466,6 +504,8 @@ class Store:
     def reopen(self, annotation_id, expected_version, source="agent"):
         def operation(state, connection):
             note = self._note(state, annotation_id)
+            if note["status"] == "deleted":
+                raise ReviewError("Deleted annotations cannot be reopened. Create a new note.", 409)
             if note["status"] == "open":
                 raise ReviewError("Annotation is already open.", 409)
             previous = note["resolution"]

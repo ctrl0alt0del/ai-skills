@@ -5,8 +5,8 @@ Reusable skills for understanding application behavior and refining requirements
 ## Skills
 
 - [Behavior Graph Builder](skills/behavior-knowledge-graph-builder/SKILL.md):
-  investigate application behavior, review a graph collaboratively, and export
-  approved graph artifacts as JSON.
+  investigate application behavior, launch the shipped review app, collect graph
+  annotations, and export approved graph artifacts as JSON.
 - [Requirement Refinement](skills/requirement-refinement/SKILL.md): analyze a
   proposed requirement with two isolated investigators and a fresh evidence judge,
   producing concrete decisions, investigations, and regression checks in Markdown
@@ -39,14 +39,55 @@ the refinement review helper require Python 3.10 or newer.
 Invoke the installed skills with `$behavior-knowledge-graph-builder` or
 `$requirement-refinement`.
 
-## Development checks
+## Graph review app
 
-Run the refinement review regression tests from the repository root:
+The review app is developed in [apps/behavior-graph-review](apps/behavior-graph-review)
+and its built distribution is committed inside the builder skill at
+`assets/review-app/dist/`. The skill launches this released app. It does not generate
+a frontend, install Node packages, or run a build during graph review.
+
+The UI uses two injected repositories:
+
+| Repository | Responsibility |
+| --- | --- |
+| `GraphRepository` | List available graphs and load a graph at an immutable revision |
+| `HumanReviewRepository` | Read review state; create, read, edit, and delete annotations; resolve/reopen notes; request review and approve a settled version |
+
+The browser's HTTP adapters and the server's local storage adapters are separate
+from the UI. The default local catalog uses existing SQLite review sessions. A
+repository factory can replace either server-side adapter with filesystem, S3,
+database, or API integration code. Those additional production adapters are not
+included. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
+
+Launch one session or a catalog of initialized direct child sessions:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_refinement_review.py'
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --session /absolute/review-session --port 0
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --workspace /absolute/reviews-root --port 0
 ```
 
-These test artifact lineage, role declarations, candidate accounting, final report
-compatibility, and output preservation. They do not measure reasoning accuracy
-or authenticate that a host actually created isolated agent contexts.
+Build the app only when developing/releasing it (Node 18+, no package install):
+
+```bash
+node apps/behavior-graph-review/build.mjs
+node apps/behavior-graph-review/build.mjs --check
+```
+
+The build fingerprints assets and records their hashes; it does not transpile or
+minify JavaScript. The server validates the shipped manifest before serving files.
+
+## Development checks
+
+Run the Python suites, frontend tests, and distribution check from the repository root:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+node --test apps/behavior-graph-review/test/*.test.js
+node apps/behavior-graph-review/build.mjs --check
+```
+
+These cover refinement artifact accounting and compatibility, graph/review adapter
+contracts, scoped annotation CRUD, version conflicts, approval invalidation, built
+asset serving, and frontend coordination. They do not measure reasoning accuracy
+or authenticate that a host actually created isolated agent contexts. The app's
+README describes the optional browser smoke test and its environment requirements.

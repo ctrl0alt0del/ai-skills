@@ -40,6 +40,10 @@ dispositioned; keep the same graph round. Any feedback mutation clears approval.
 
 ## Record approval
 
+Use `edit-annotation` or `delete-annotation` only for an actual requested correction
+or removal of saved feedback. Record the corrected wording faithfully and retain
+the tombstone/audit. Do not remove a question merely to make the proposal settled.
+
 Only record real user approval of the complete current round, including the
 displayed scope and limitations. A compliment, confirmation of one fact, an old
 approval, or the original request to build a graph is insufficient. If the target
@@ -56,7 +60,9 @@ return the affected current proposal to the user. Do not bypass the exporter.
 
 ## Missing runtime
 
-If Python/server tools cannot run, continue a visibly draft review in chat. Keep
+If Python/server tools cannot run or the shipped app distribution is missing,
+continue a visibly draft review in chat. Never generate or rebuild an app as a
+fallback during graph review. Keep
 the proposal, exact feedback, and source references in host-supported durable
 artifacts where available. Do not pretend annotations reached the runtime store.
 Restore and validate them when runtime access returns before using its finalizer.

@@ -1,0 +1,13 @@
+{
+  "schema_version": "behavior-review-app-dist/1",
+  "entry": "index.html",
+  "source_digest": "03da85324e8808eb9481cb2e37ede612773a85af4362216531d88522a7ff8a2e",
+  "files": {
+    "app.a734f918b6bc2d23.js": "a734f918b6bc2d2393058b3492552b03a115f58be9999abea89c05cf86e9d5be",
+    "controller.4a3c556f82e38ce0.js": "4a3c556f82e38ce0867cc41caf0fd0f9233739fee6235c8f6f15ebb062df9bb1",
+    "http-repositories.cab1792492ee2c64.js": "cab1792492ee2c64cfc3a531632fcff69fd28f96e8cf169676dae08be4431821",
+    "index.html": "12c97f675adb6a5e98c781012133d5c904baddf153cc42a90f5637c1587b7f75",
+    "main.710e7c5eac5a714f.js": "710e7c5eac5a714f6c0a77d539040ead317bfe798d8c3f8312e6c7c6419a12a8",
+    "styles.456c13ef8174f5c0.css": "456c13ef8174f5c0b2c292f833cad13dfb81f27d591b722b853ce3a8b1f87ccb"
+  }
+}

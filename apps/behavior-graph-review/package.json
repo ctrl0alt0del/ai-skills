@@ -1,0 +1,13 @@
+{
+  "name": "@ai-skills/behavior-graph-review",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Prebuilt behavior graph review app with replaceable graph and human-review repositories",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check",
+    "test": "node --test test/*.test.js"
+  }
+}

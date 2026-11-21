@@ -1,9 +1,9 @@
 interface:
   display_name: Behavior Graph Builder
-  short_description: Review application behavior before generating its graph
+  short_description: Review behavior graphs in the bundled app
   default_prompt: Use $behavior-knowledge-graph-builder to investigate this project,
-    start an interactive review of its behavior graph, collect my feedback, and generate
-    the final graph only after I approve the settled version.
+    launch the shipped review app, collect my graph feedback, and generate the final
+    graph after I approve the settled version.
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:

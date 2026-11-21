@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Behavior Graph Review</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header class="header">
+ <div class="brand">
+<div class="brand-mark" aria-hidden="true">
+<svg width="28" height="28" viewBox="0 0 30 30">
+<path d="M8 9L22 15 8 23M8 9V23" fill="none" stroke="#86c8ad" stroke-width="1.6"/>
+<circle cx="8" cy="8" r="3.2" fill="#e2f2e6"/>
+<circle cx="22" cy="15" r="3.2" fill="#84bda8"/>
+<circle cx="8" cy="23" r="3.2" fill="#e2f2e6"/>
+</svg>
+</div>
+<div class="brand-name">
+<div class="eyebrow">Behavior knowledge graph</div>
+<h1 id="project-title">Review workspace</h1>
+</div>
+</div>
+ <div class="header-actions">
+<div class="connection">
+<span id="connection-dot" class="dot">
+</span>
+<span id="connection-text">Connecting</span>
+</div>
+<span id="status-pill" class="pill amber">Preparing</span>
+<div class="round-wrap">
+<label class="round-label" for="round-select">Review version</label>
+<select class="round-select" id="round-select" aria-label="Review round">
+<option>First proposal</option>
+</select>
+</div>
+<button class="primary" id="open-review">Settle review</button>
+</div>
+</header>
+<section class="catalog-bar" aria-label="Available graphs">
+  <label for="graph-select">Graph</label>
+  <select id="graph-select" aria-label="Choose a graph" disabled>
+<option>Loading graphs…</option>
+</select>
+  <span id="catalog-count" class="tiny muted" aria-live="polite">Reading catalog</span>
+  <button id="refresh-catalog" class="small ghost" type="button">Refresh list</button>
+</section>
+<main class="workspace">
+ <aside class="sidebar" id="sidebar" aria-label="Graph items">
+  <div class="row between">
+<span class="eyebrow">Explore the system</span>
+<button class="small ghost mobile-tools" id="close-list" aria-label="Close item list">Close</button>
+</div>
+  <div class="search-wrap">
+<span class="search-icon" aria-hidden="true">⌕</span>
+<input id="search" type="search" placeholder="Find a behavior or concept…" aria-label="Search graph items">
+</div>
+  <div class="filters">
+<div>
+<label for="domain-filter">Domain</label>
+<select id="domain-filter">
+<option value="">All domains</option>
+</select>
+</div>
+<div>
+<label for="kind-filter">Kind</label>
+<select id="kind-filter">
+<option value="">All kinds</option>
+<option value="behavior">Behaviors</option>
+<option value="state">Data & state</option>
+<option value="event">Events</option>
+<option value="rule">Rules</option>
+<option value="requirement">Requirements</option>
+<option value="interface">Interfaces</option>
+<option value="configuration">Configuration</option>
+</select>
+</div>
+</div>
+  <div class="node-list" id="node-list">
+<div class="loading-sheen">
+</div>
+<div class="loading-sheen">
+</div>
+<div class="loading-sheen">
+</div>
+</div>
+  <div class="sidebar-footer">Select a behavior to inspect its rules, connections, and evidence. Add a note wherever the picture needs correcting.</div>
+ </aside>
+ <section class="center" aria-label="Graph canvas">
+  <div class="canvas-header">
+<div class="canvas-title">
+<div class="row wrap">
+<h2 id="canvas-heading">A shared picture of your application</h2>
+</div>
+<p id="canvas-description">Explore the proposal, add your knowledge, then settle the version together.</p>
+<div class="stat-row" id="stats">
+<span>
+<strong>—</strong> items</span>
+<span>
+<strong>—</strong> relationships</span>
+<span>
+<strong>—</strong> open notes</span>
+</div>
+</div>
+</div>
+  <div id="round-summary" class="round-summary">
+</div>
+  <div class="toolbar">
+<div class="toolbar-group">
+<button class="small mobile-tools" id="open-list">Items & filters</button>
+<button class="small" id="focus-button" disabled>Focus connections</button>
+<button class="small ghost" id="clear-filter">Show all</button>
+</div>
+<div class="toolbar-group">
+<button class="icon small" id="zoom-out" aria-label="Zoom out">−</button>
+<span class="zoom-value" id="zoom-value">100%</span>
+<button class="icon small" id="zoom-in" aria-label="Zoom in">+</button>
+<button class="small" id="fit-button">Fit</button>
+<button class="icon small" id="reset-layout" aria-label="Reset item arrangement" title="Reset item arrangement">↺</button>
+</div>
+</div>
+  <div class="graph-wrap" id="graph-wrap">
+<svg id="graph-svg" aria-label="Interactive behavior graph" role="img">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M0 0L10 5L0 10Z" fill="#8ca69a"/>
+</marker>
+<marker id="arrow-selected" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M0 0L10 5L0 10Z" fill="#13796f"/>
+</marker>
+</defs>
+<g id="viewport">
+<g id="edge-layer">
+</g>
+<g id="node-layer">
+</g>
+</g>
+</svg>
+<div class="graph-empty" id="graph-empty">
+<div class="empty-orbit" aria-hidden="true">⌘</div>
+<h2 id="empty-title">Preparing your first proposal</h2>
+<p id="empty-description">The agent is gathering behaviors and their connections. This view updates when the proposal is ready.</p>
+</div>
+<div class="graph-hint">Drag the canvas to pan · Scroll to zoom · Drag items to arrange</div>
+</div>
+  <div class="legend">
+<span>
+<i class="legend-dot" style="background:#318579">
+</i>Behavior</span>
+<span>
+<i class="legend-dot" style="background:#7596b2">
+</i>Data & state</span>
+<span>
+<i class="legend-dot" style="background:#c79b50">
+</i>Event</span>
+<span>
+<i class="legend-line">
+</i>Supported</span>
+<span>
+<i class="legend-line dashed">
+</i>Inferred</span>
+<span id="view-summary" style="margin-left:auto">
+</span>
+</div>
+ </section>
+ <aside class="inspector" aria-label="Details and review">
+  <nav class="tabs" role="tablist" aria-label="Review panels">
+<button id="tab-details" class="tab active" role="tab" aria-selected="true" aria-controls="panel-details">Details</button>
+<button id="tab-notes" class="tab" role="tab" aria-selected="false" aria-controls="panel-notes">Notes <span id="notes-count" class="badge-count">0</span>
+</button>
+<button id="tab-review" class="tab" role="tab" aria-selected="false" aria-controls="panel-review">Review <span id="review-dot" class="badge-count">•</span>
+</button>
+</nav>
+  <section class="panel" id="panel-details" role="tabpanel" aria-labelledby="tab-details">
+</section>
+  <section class="panel hidden" id="panel-notes" role="tabpanel" aria-labelledby="tab-notes">
+   <div class="row between">
+<h2>Review notes</h2>
+<button class="small ghost" id="note-whole-graph">Whole graph</button>
+</div>
+<p class="muted small-text" style="margin-top:8px">Corrections, questions, and missing connections stay with this review.</p>
+   <div id="feedback-notice" class="notice hidden" style="margin-top:14px">
+</div>
+   <div class="composer" id="composer">
+<label for="annotation-kind">Add a note</label>
+<div class="composer-target" id="composer-target">About the whole graph</div>
+<div id="draft-warning" class="notice warning hidden">
+</div>
+<select id="annotation-kind" aria-label="Note kind">
+<option value="correction">Correction</option>
+<option value="question">Question</option>
+<option value="missing">Something is missing</option>
+<option value="confirmation">Confirmation</option>
+<option value="note">General note</option>
+</select>
+<textarea id="annotation-text" placeholder="What should be clarified or changed? Include the expected behavior where you know it." aria-label="Annotation text" maxlength="12000">
+</textarea>
+<div class="row between" style="margin-top:9px">
+<span class="draft-indicator" id="draft-indicator">Saved notes are shared with the agent.</span>
+<button class="primary small" id="save-note">Save note</button>
+</div>
+</div>
+   <div class="note-filters">
+<label for="note-filter" class="small-text muted">Show notes</label>
+<select id="note-filter">
+<option value="all">All notes</option>
+<option value="selected">Selected item</option>
+<option value="open">Open only</option>
+<option value="deleted">Deleted notes</option>
+</select>
+</div>
+<div id="notes-list">
+</div>
+<button id="request-review" class="full" style="margin-top:14px">Send feedback to the agent</button>
+<p id="feedback-help" class="tiny muted" style="margin-top:9px;line-height:1.6">Submit your feedback here. If the agent is not waiting, return to chat to continue the review.</p>
+  </section>
+  <section class="panel hidden" id="panel-review" role="tabpanel" aria-labelledby="tab-review">
+</section>
+ </aside>
+</main>
+<div class="toast-container" id="toast-container" role="status" aria-live="polite">
+</div>
+<dialog id="resolve-dialog">
+<form id="resolve-form">
+<h2>Settle this note</h2>
+<p id="resolve-question">
+</p>
+<div id="resolution-warning" class="notice warning hidden">
+</div>
+<label for="disposition">Outcome</label>
+<select id="disposition">
+<option value="addressed">Addressed in the proposal</option>
+<option value="accepted_gap">Accept as a documented limitation</option>
+<option value="rejected">No change needed</option>
+</select>
+<label for="resolution-text">What settled it?</label>
+<textarea id="resolution-text" required maxlength="12000" placeholder="Explain the correction, answer, or reason for accepting the limitation.">
+</textarea>
+<div class="actions">
+<button type="button" id="cancel-resolution">Cancel</button>
+<button class="primary" id="save-resolution" type="submit">Save outcome</button>
+</div>
+</form>
+</dialog>
+<dialog id="edit-dialog">
+<form id="edit-form">
+<h2>Edit review note</h2>
+<p>Saving an edit reopens the note and requires review of the current proposal.</p>
+<div id="edit-warning" class="notice warning hidden">
+</div>
+<label for="edit-kind">Note kind</label>
+<select id="edit-kind">
+<option value="correction">Correction</option>
+<option value="question">Question</option>
+<option value="missing">Something is missing</option>
+<option value="confirmation">Confirmation</option>
+<option value="note">General note</option>
+</select>
+<label for="edit-text">Note text</label>
+<textarea id="edit-text" required maxlength="12000">
+</textarea>
+<div class="actions">
+<button type="button" id="cancel-edit">Cancel</button>
+<button class="primary" id="save-edit" type="submit">Save changes</button>
+</div>
+</form>
+</dialog>
+<dialog id="delete-dialog">
+<form id="delete-form">
+<h2>Delete this note?</h2>
+<p>The note will be removed from active review. Its audit history stays available, and any current approval will be invalidated.</p>
+<div id="delete-warning" class="notice warning hidden">
+</div>
+<p id="delete-preview" class="note-body">
+</p>
+<div class="actions">
+<button type="button" id="cancel-delete">Keep note</button>
+<button class="danger" id="confirm-delete" type="submit">Delete note</button>
+</div>
+</form>
+</dialog>
+<script type="module" src="./main.js">
+</script>
+</body>
+</html>

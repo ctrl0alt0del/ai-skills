@@ -2,6 +2,7 @@
 """Local, persistent behavior-graph review. Python 3.10+; no third-party packages."""
 
 import argparse
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
@@ -10,15 +11,16 @@ import secrets
 import socket
 import sqlite3
 import sys
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, unquote
 
 sys.dont_write_bytecode = True
 
 from graph_model import KINDS, DISPOSITIONS, TARGET_TYPES, Store, ReviewError, parse_json, read_graph
+from graph_repositories import check_repositories, local_repositories, load_repositories
 
 
 MAX_REQUEST_BYTES = 128 * 1024
-VIEWER = Path(__file__).resolve().parent.parent / "assets" / "review.html"
+DIST = Path(__file__).resolve().parent.parent / "assets" / "review-app" / "dist"
 
 
 def fields(body, required, optional=()):
@@ -46,7 +48,47 @@ def trusted_origin(value):
     return parsed.scheme.lower() + "://" + parsed.netloc.lower()
 
 
-def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
+def load_dist(directory):
+    """Read only manifest-listed, hash-verified built assets; never build at runtime."""
+    directory = Path(directory).resolve()
+    try:
+        manifest = parse_json((directory / "manifest.json").read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ReviewError("Packaged review app dist is missing. Install a complete release; runtime does not build the app.") from error
+    if (not isinstance(manifest, dict) or manifest.get("schema_version") != "behavior-review-app-dist/1"
+            or manifest.get("entry") != "index.html" or not isinstance(manifest.get("files"), dict)
+            or "index.html" not in manifest["files"]):
+        raise ReviewError("Packaged review app manifest is invalid.")
+    assets = {}
+    mimes = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+             ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+             ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml"}
+    for relative, expected in manifest["files"].items():
+        if (not isinstance(relative, str) or not relative or "\\" in relative
+                or relative.startswith("/") or any(part in {"", ".", ".."} for part in relative.split("/"))
+                or not isinstance(expected, str) or len(expected) != 64):
+            raise ReviewError("Packaged review app manifest contains an unsafe asset path or digest.")
+        path = directory / relative
+        resolved = path.resolve()
+        if directory not in resolved.parents or path.is_symlink():
+            raise ReviewError("Packaged review app assets must remain inside dist.")
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise ReviewError("A packaged review app asset is missing.") from error
+        if hashlib.sha256(content).hexdigest() != expected:
+            raise ReviewError("A packaged review app asset does not match its build manifest.")
+        assets["/" + relative] = (content, mimes.get(path.suffix, "application/octet-stream"))
+    assets["/"] = assets["/index.html"]
+    return assets
+
+
+def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dist=None):
+    """Serve the prebuilt app over injected repositories, or a legacy Store."""
+    legacy_store = repositories if isinstance(repositories, Store) else None
+    legacy_id = legacy_store.state()["session_id"] if legacy_store is not None else None
+    repositories = local_repositories(session=legacy_store) if legacy_store is not None else check_repositories(repositories)
+    graphs, reviews = repositories.graphs, repositories.reviews
     if host == "localhost":
         host = "127.0.0.1"
     try:
@@ -58,22 +100,19 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
     if type(port) is not int or not 0 <= port <= 65535:
         raise ReviewError("port must be between 0 and 65535.")
     allowed_origin = trusted_origin(allowed_origin) if allowed_origin else None
-    store.state()  # Fail before binding if the session is missing.
-    token = store.token()
-    if not VIEWER.is_file():
-        raise ReviewError("Packaged review frontend was not found.")
-    viewer = VIEWER.read_bytes()
+    graphs.list_graphs()  # Fail before binding if configured storage is unavailable.
+    token = legacy_store.token() if legacy_store is not None else secrets.token_urlsafe(32)
+    assets = load_dist(DIST if dist is None else dist)
     origins = set()
     hosts = set()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
-        server_version = "BehaviorReview/1"
+        server_version = "BehaviorReview/2"
         sys_version = ""
 
         def log_message(self, format, *args):
-            # Do not put project text, annotations, or authentication material in logs.
-            pass
+            pass  # Do not log project text, annotations, or credentials.
 
         def setup(self):
             super().setup()
@@ -88,7 +127,7 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'")
             self.end_headers()
             if self.command != "HEAD":
                 try:
@@ -115,35 +154,78 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
                 if len(supplied) != 1 or not secrets.compare_digest(supplied[0], token):
                     raise ReviewError("Missing or invalid review token. Reload the viewer.", 403)
 
-        def public_state(self, state=None):
-            result = state if state is not None else store.state()
+        def parsed_route(self):
+            parsed = urlsplit(self.path)
+            # Decode components individually so an opaque graph ID may itself contain a slash.
+            parts = [unquote(part, errors="strict") for part in parsed.path.split("/")[1:]]
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            return parsed, parts, query
+
+        def public_review(self, result):
             return {**result, "csrf_token": token}
+
+        def legacy_state(self, result=None):
+            if legacy_id is None:
+                raise ReviewError("Use a graph-scoped API route for this repository configuration.", 404)
+            result = result if result is not None else reviews.get_review(legacy_id)
+            snapshot = graphs.get_graph(legacy_id, result["graph_revision"])
+            return {**result, "graph": snapshot["graph"], "csrf_token": token}
 
         def route_get(self):
             self.check_origin()
-            parsed = urlsplit(self.path)
-            if parsed.path == "/":
-                self.reply(200, viewer, "text/html; charset=utf-8")
-            elif parsed.path == "/api/state":
-                self.reply(200, self.public_state())
+            parsed, parts, query = self.parsed_route()
+            if parsed.path in assets:
+                self.reply(200, *assets[parsed.path])
+            elif parsed.path == "/api/bootstrap":
+                self.reply(200, {"csrf_token": token})
             elif parsed.path == "/api/health":
-                self.reply(200, {"ok": True, "session_id": store.state()["session_id"]})
+                body = {"ok": True, "graph_count": len(graphs.list_graphs())}
+                if legacy_id is not None:
+                    body["session_id"] = legacy_id
+                self.reply(200, body)
+            elif parsed.path == "/api/graphs":
+                if query:
+                    raise ReviewError("Graph catalog does not accept query parameters.")
+                self.reply(200, {"graphs": graphs.list_graphs()})
+            elif len(parts) >= 3 and parts[:2] == ["api", "graphs"]:
+                graph_id = parts[2]
+                if len(parts) == 3:
+                    if set(query) - {"revision"} or ("revision" in query and len(query["revision"]) != 1):
+                        raise ReviewError("Provide at most one graph revision.")
+                    self.reply(200, graphs.get_graph(graph_id, query.get("revision", [None])[0]))
+                elif len(parts) == 4 and parts[3] == "review":
+                    if query:
+                        raise ReviewError("Review reads do not accept query parameters.")
+                    self.reply(200, self.public_review(reviews.get_review(graph_id)))
+                elif len(parts) in {4, 5} and parts[3] == "annotations":
+                    if set(query) - {"include_deleted"} or query.get("include_deleted", ["false"]) not in (["true"], ["false"]):
+                        raise ReviewError("include_deleted must be one true or false value.")
+                    deleted = query.get("include_deleted") == ["true"]
+                    if len(parts) == 4:
+                        self.reply(200, {"annotations": reviews.list_annotations(graph_id, deleted)})
+                    else:
+                        self.reply(200, reviews.get_annotation(graph_id, parts[4], deleted))
+                else:
+                    raise ReviewError("Route not found.", 404)
+            elif parsed.path == "/api/state":
+                self.reply(200, self.legacy_state())
             elif parsed.path == "/api/round":
-                query = parse_qs(parsed.query)
+                if legacy_id is None:
+                    raise ReviewError("Use a graph-scoped revision route.", 404)
                 if set(query) != {"round"} or len(query["round"]) != 1:
                     raise ReviewError("Provide one round number.")
-                try:
-                    number = int(query["round"][0])
-                except ValueError as error:
-                    raise ReviewError("Invalid round number.") from error
-                self.reply(200, store.round_snapshot(number))
+                snapshot = graphs.get_graph(legacy_id, query["round"][0])
+                state = reviews.get_review(legacy_id)
+                metadata = next((item for item in state["rounds"] if str(item["round"]) == snapshot["revision"]), None)
+                if metadata is None:
+                    raise ReviewError("Review round not found.", 404)
+                self.reply(200, {**metadata, "graph": snapshot["graph"]})
             elif parsed.path == "/favicon.ico":
                 self.reply(204, b"", "image/x-icon")
             else:
                 raise ReviewError("Route not found.", 404)
 
-        def route_post(self):
-            self.check_origin(mutation=True)
+        def read_body(self):
             if self.headers.get("Transfer-Encoding"):
                 raise ReviewError("Transfer-Encoding is not accepted.")
             if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
@@ -161,30 +243,51 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
             if len(raw) != length:
                 raise ReviewError("Incomplete request body.")
             try:
-                body = parse_json(raw.decode("utf-8"))
+                return parse_json(raw.decode("utf-8"))
             except UnicodeError as error:
                 raise ReviewError("Request must be UTF-8 JSON.") from error
-            parsed = urlsplit(self.path)
+
+        def route_mutation(self):
+            self.check_origin(mutation=True)
+            parsed, parts, query = self.parsed_route()
             if parsed.query:
                 raise ReviewError("Mutation routes do not accept query parameters.")
-            if parsed.path == "/api/annotations":
-                fields(body, ("expected_version", "target_type", "target_id", "kind", "text"))
-                result = store.annotate(body["target_type"], body["target_id"], body["kind"], body["text"], "ui", None, body["expected_version"])
-            elif parsed.path == "/api/resolve":
-                fields(body, ("expected_version", "annotation_id", "disposition", "text"))
-                result = store.resolve(body["annotation_id"], body["disposition"], body["text"], "ui", body["expected_version"])
-            elif parsed.path == "/api/reopen":
-                fields(body, ("expected_version", "annotation_id"))
-                result = store.reopen(body["annotation_id"], body["expected_version"], "ui")
-            elif parsed.path == "/api/request-review":
-                fields(body, ("expected_version",))
-                result = store.request_review(body["expected_version"])
-            elif parsed.path == "/api/approve":
-                fields(body, ("expected_version", "acknowledge_limits", "text"))
-                result = store.approve(body["text"], "ui", None, body["acknowledge_limits"], body["expected_version"])
+            body = self.read_body()
+            legacy = False
+            if len(parts) >= 4 and parts[:2] == ["api", "graphs"]:
+                graph_id, route = parts[2], parts[3:]
+            elif legacy_id is not None and len(parts) == 2 and parts[0] == "api":
+                graph_id, route, legacy = legacy_id, parts[1:], True
             else:
                 raise ReviewError("Route not found.", 404)
-            self.reply(200, self.public_state(result))
+            if route == ["annotations"] and self.command == "POST":
+                fields(body, ("expected_version", "target_type", "target_id", "kind", "text"))
+                result = reviews.create_annotation(graph_id, {k: v for k, v in body.items() if k != "expected_version"}, body["expected_version"])
+            elif len(route) == 2 and route[0] == "annotations" and self.command == "PATCH":
+                fields(body, ("expected_version",), ("text", "kind"))
+                if not (body.keys() & {"text", "kind"}):
+                    raise ReviewError("Provide text and/or kind for an annotation edit.")
+                result = reviews.update_annotation(graph_id, route[1], {k: v for k, v in body.items() if k != "expected_version"}, body["expected_version"])
+            elif len(route) == 2 and route[0] == "annotations" and self.command == "DELETE":
+                fields(body, ("expected_version",))
+                result = reviews.delete_annotation(graph_id, route[1], body["expected_version"])
+            elif self.command != "POST":
+                raise ReviewError("Method is not supported for this route.", 405)
+            elif route == ["resolve"]:
+                fields(body, ("expected_version", "annotation_id", "disposition", "text"))
+                result = reviews.resolve_annotation(graph_id, body["annotation_id"], body["disposition"], body["text"], body["expected_version"])
+            elif route == ["reopen"]:
+                fields(body, ("expected_version", "annotation_id"))
+                result = reviews.reopen_annotation(graph_id, body["annotation_id"], body["expected_version"])
+            elif route == ["request-review"]:
+                fields(body, ("expected_version",))
+                result = reviews.request_review(graph_id, body["expected_version"])
+            elif route == ["approve"]:
+                fields(body, ("expected_version", "acknowledge_limits", "text"))
+                result = reviews.approve_review(graph_id, body["text"], body["acknowledge_limits"], body["expected_version"])
+            else:
+                raise ReviewError("Route not found.", 404)
+            self.reply(200, self.legacy_state(result) if legacy else self.public_review(result))
 
         def run_route(self, callback):
             try:
@@ -192,10 +295,11 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
             except ReviewError as error:
                 self.close_connection = True
                 self.reply(error.status, {"error": str(error)})
-            except (OSError, sqlite3.Error, ValueError) as error:
+            except Exception:
+                # SDK/API adapters may raise their own exception classes. Do not
+                # expose their endpoints, credentials, or response bodies.
                 self.close_connection = True
-                # Keep filesystem/database internals out of browser errors.
-                self.reply(500, {"error": "Review operation failed. Inspect the session and retry; no approval was implied."})
+                self.reply(500, {"error": "Review operation failed. Inspect the configured repositories and retry; no approval was implied."})
 
         def do_GET(self):
             self.run_route(self.route_get)
@@ -204,7 +308,13 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
             self.run_route(self.route_get)
 
         def do_POST(self):
-            self.run_route(self.route_post)
+            self.run_route(self.route_mutation)
+
+        def do_PATCH(self):
+            self.run_route(self.route_mutation)
+
+        def do_DELETE(self):
+            self.run_route(self.route_mutation)
 
         def do_OPTIONS(self):
             self.close_connection = True
@@ -231,9 +341,16 @@ def make_server(store, host="127.0.0.1", port=0, allowed_origin=None):
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("init", "serve", "status", "wait", "disconnect", "propose", "annotate", "resolve", "reopen", "complete-review", "approve-chat", "export"):
+    for command in ("init", "serve", "status", "wait", "disconnect", "propose", "annotate", "edit-annotation", "delete-annotation", "resolve", "reopen", "complete-review", "approve-chat", "export"):
         sub = subparsers.add_parser(command)
-        sub.add_argument("--session", required=True, type=Path)
+        if command == "serve":
+            storage = sub.add_mutually_exclusive_group(required=True)
+            storage.add_argument("--session", type=Path)
+            storage.add_argument("--workspace", type=Path, help="Catalog of initialized review-session directories")
+            storage.add_argument("--repository-factory", help="Trusted module:callable or /path/plugin.py:callable returning graph/review repositories")
+            sub.add_argument("--repository-config", type=Path, help="JSON object passed to the custom repository factory")
+        else:
+            sub.add_argument("--session", required=True, type=Path)
         if command not in {"init", "serve", "status", "wait", "disconnect"}:
             sub.add_argument("--expect-version", required=True, type=int)
         if command == "init":
@@ -260,6 +377,12 @@ def build_parser():
             sub.add_argument("--disposition", required=True, choices=sorted(DISPOSITIONS))
             sub.add_argument("--text", required=True)
             sub.add_argument("--source", required=True, choices=("chat", "agent"))
+        elif command in {"edit-annotation", "delete-annotation"}:
+            sub.add_argument("--id", required=True)
+            sub.add_argument("--source", required=True, choices=("chat", "agent"))
+            if command == "edit-annotation":
+                sub.add_argument("--text")
+                sub.add_argument("--kind", choices=sorted(KINDS))
         elif command == "reopen":
             sub.add_argument("--id", required=True)
         elif command == "complete-review":
@@ -282,6 +405,29 @@ def main(argv=None):
             graph = read_graph(args.graph)
             result = {"valid": True, "nodes": len(graph["nodes"]), "dependencies": len(graph["dependencies"]),
                       "notice": "Structure and reference integrity checked; source truth and completeness are not verified."}
+        elif args.command == "serve":
+            if args.repository_config and not args.repository_factory:
+                raise ReviewError("--repository-config requires --repository-factory.")
+            if args.repository_factory:
+                repositories = load_repositories(args.repository_factory, args.repository_config)
+            elif args.workspace:
+                repositories = local_repositories(workspace=args.workspace)
+            else:
+                repositories = Store(args.session)
+            server, url = make_server(repositories, args.host, args.port, args.allowed_origin)
+            info = {"url": url, "mode": "graph review"}
+            if isinstance(repositories, Store):
+                info["session_id"] = repositories.state()["session_id"]
+            else:
+                info["graph_count"] = len(repositories.graphs.list_graphs())
+            print(json.dumps(info), flush=True)
+            try:
+                server.serve_forever(poll_interval=0.3)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.server_close()
+            return 0
         else:
             store = Store(args.session)
             if args.command == "init":
@@ -292,22 +438,17 @@ def main(argv=None):
                 result = store.wait(args.after_version, args.timeout)
             elif args.command == "disconnect":
                 result = store.disconnect()
-            elif args.command == "serve":
-                server, url = make_server(store, args.host, args.port, args.allowed_origin)
-                print(json.dumps({"url": url, "session_id": store.state()["session_id"], "mode": "local review"}), flush=True)
-                try:
-                    server.serve_forever(poll_interval=0.3)
-                except KeyboardInterrupt:
-                    pass
-                finally:
-                    server.server_close()
-                return 0
             elif args.command == "propose":
                 result = store.propose(read_graph(args.graph), args.summary, args.expect_version)
             elif args.command == "annotate":
                 result = store.annotate(args.target_type, args.target_id, args.kind, args.text, args.source, args.source_ref, args.expect_version)
             elif args.command == "resolve":
                 result = store.resolve(args.id, args.disposition, args.text, args.source, args.expect_version)
+            elif args.command == "edit-annotation":
+                changes = {key: getattr(args, key) for key in ("text", "kind") if getattr(args, key) is not None}
+                result = store.edit_annotation(args.id, changes, args.source, args.expect_version)
+            elif args.command == "delete-annotation":
+                result = store.delete_annotation(args.id, args.source, args.expect_version)
             elif args.command == "reopen":
                 result = store.reopen(args.id, args.expect_version)
             elif args.command == "complete-review":

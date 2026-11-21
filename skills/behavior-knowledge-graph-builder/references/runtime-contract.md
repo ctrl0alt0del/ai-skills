@@ -4,6 +4,7 @@
 
 - Graph input
 - Review state
+- Packaged app and repositories
 - HTTP interface
 - Command interface
 - Finalization
@@ -52,9 +53,11 @@ one node and a nonempty coverage.checked. ID strings must match
 
 ## Review state
 
-Persist sessions in a user-specified directory, separately from final graph
-artifacts. Use SQLite transactions for cross-process access. CLI and browser use
-the same store; no browser-only feedback. State has:
+The bundled local adapter persists sessions in a user-specified directory,
+separately from final graph artifacts, using SQLite transactions for cross-process
+access. CLI and browser use the same store; no browser-only feedback. Other
+adapters implement the guarantees in [repository-contract.md](repository-contract.md).
+The local CLI state has:
 
 - session_id, title, state_version (integer optimistic lock), round (0 before a
   proposal), graph_digest, graph (null initially), annotations, rounds, approval,
@@ -66,10 +69,14 @@ the same store; no browser-only feedback. State has:
 - annotations: id, target_type (graph/node/dependency/claim), target_id (null for
   graph), kind (question/correction/missing/confirmation/note), text, source
   (ui/chat/agent), source_ref (string or null), round, created_at, status
-  (open/resolved), resolution (null or {disposition,text,source,round,at}).
+  (open/resolved/deleted), resolution (null or {disposition,text,source,round,at}).
+  Edits/deletions add update/deletion metadata while preserving the original
+  source and creation metadata. Existing notes need no migration.
 - Resolution dispositions: addressed, accepted_gap, rejected. Require a meaningful
-  explanation. Do not delete annotations. Orphaned targets remain visible and
-  unresolved unless explicitly dispositioned.
+  explanation. Deletion is an audited tombstone, never erasure of history.
+  Deleted notes do not block settlement or reopen on later proposals. Editing a
+  resolved note reopens it. Orphaned active targets remain visible and unresolved
+  unless explicitly dispositioned or deleted by a reviewer.
 - rounds: round, digest, summary, created_at, node_count, dependency_count. Preserve
   complete snapshots in storage. approval contains round, digest, source, text,
   created_at, acknowledge_limits. Source is ui or chat, never agent.
@@ -84,33 +91,63 @@ the same store; no browser-only feedback. State has:
   review_requested=false, and acknowledge_limits=true. Approval is tied to exact
   round, digest and the transaction's state, not a generic prior 'yes'.
 
+## Packaged app and repositories
+
+App source lives in `apps/behavior-graph-review/` in the development repository.
+The installed skill contains the built `assets/review-app/dist/` directory,
+including an HTML entry, content-hashed assets, and a SHA-256 manifest. Serve this
+distribution without installing Node packages, compiling, or generating UI at
+runtime. Missing/invalid assets fail with a packaging error.
+
+The app uses injected `GraphRepository` and `HumanReviewRepository` interfaces.
+The default HTTP adapters are separate from rendering. Server-side protocols and
+local adapters live in `scripts/graph_repositories.py`. Review snapshots exclude
+graph content and reference `graph_id`, `graph_revision`, and `graph_digest`; load
+that exact graph snapshot to obtain a consistent view. See the repository contract
+for adapter configuration, immutable revisions, and conditional-write guarantees.
+
 ## HTTP interface
 
 Use a Python standard-library server, loopback binding by default, no external
 assets/dependencies. Serve only the packaged viewer and named API routes; do not
 serve arbitrary filesystem paths. Limit request sizes. Enforce Host/Origin checks
-for local operation and JSON-only mutations with a session CSRF token; no CORS.
+for local operation and JSON-only mutations with a server CSRF token; no CORS.
 Do not log annotation bodies or auth tokens. Remote preview is optional and needs
 an explicitly configured origin/proxy; do not bind publicly by default.
 
-- GET `/` serves assets/review.html.
-- GET `/api/state` returns the state plus `csrf_token`. Send Cache-Control no-store.
-- GET `/api/round?round=N` returns `{round, graph, digest, summary}` for that round.
-- GET `/api/health` returns `{ok:true,session_id}`.
-- POST `/api/annotations` body: expected_version, target_type, target_id, kind,
-  text. Source is set to ui by server. Returns updated state.
-- POST `/api/resolve` body: expected_version, annotation_id, disposition, text.
-  Source is ui. Returns state.
-- POST `/api/reopen` body: expected_version, annotation_id. Returns state.
-- POST `/api/request-review` body: expected_version. Set review_requested and
-  invalidate approval. Returns state. UI indicates connected-agent pickup or the
-  return-to-chat fallback, according to current presence.
-- POST `/api/approve` body: expected_version, acknowledge_limits:true, text.
-  Returns state; does not export final files itself.
-- All POSTs require `Content-Type: application/json` and `X-Review-Token` matching
-  the GET state token. Stale version returns 409 with a useful error; malformed
-  input returns 400; forbidden requests 403. Error JSON: `{error:"message"}`.
-- The frontend polls state every few seconds and preserves in-progress user text.
+- GET `/` serves the prebuilt `index.html`; other static routes are limited to
+  the verified distribution manifest. JavaScript is external, with same-origin CSP.
+- GET `/api/bootstrap` returns `{csrf_token}` for the HTTP adapters.
+- GET `/api/graphs` returns `{graphs:[...]}` with available graph summaries.
+- GET `/api/graphs/{graph_id}?revision=R` returns
+  `{id,title,revision,digest,graph}`. Omit the revision for latest. Treat IDs and
+  revisions as opaque values and URL-encode them. Local revisions are round strings.
+- GET `/api/graphs/{graph_id}/review` returns the review snapshot without `graph`,
+  with its exact `graph_id` and `graph_revision` references. Each `rounds` entry
+  also includes `graph_revision` and `digest`; never infer a storage revision from
+  the displayed round number.
+- GET `/api/graphs/{graph_id}/annotations` returns `{annotations:[...]}`;
+  GET `/api/graphs/{graph_id}/annotations/{id}` returns one annotation.
+- POST `/api/graphs/{graph_id}/annotations` body: expected_version, target_type,
+  target_id, kind, text. The server records source as ui.
+- PATCH `/api/graphs/{graph_id}/annotations/{id}` body: expected_version and
+  text and/or kind. Preserve target and creation metadata; reopen a resolved note.
+- DELETE `/api/graphs/{graph_id}/annotations/{id}` JSON body: expected_version.
+  Record a tombstone and audit event; invalidate prior approval.
+- POST `/api/graphs/{graph_id}/resolve` body: expected_version, annotation_id,
+  disposition, text. POST `.../reopen` body: expected_version, annotation_id.
+- POST `/api/graphs/{graph_id}/request-review` body: expected_version. Set
+  review_requested and invalidate approval.
+- POST `/api/graphs/{graph_id}/approve` body: expected_version,
+  acknowledge_limits:true, text. Record approval; do not export final files.
+- Mutations return the complete updated review snapshot, without graph content.
+  POST, PATCH, and DELETE require `Content-Type: application/json`, a trusted Origin,
+  and `X-Review-Token` from bootstrap. Stale versions return 409; malformed input
+  returns 400; forbidden requests 403; absent IDs/revisions 404.
+  Error JSON is `{error:"message"}`.
+- GET `/api/health` reports server health. Legacy single-session state/round and
+  action routes remain available for existing clients of `serve --session`.
+- The frontend polls review state every few seconds and preserves in-progress user text.
   It also notices presence changes without a review-version change. When an agent
   is connected, it says feedback is saved for that agent; otherwise it gives the
   return-to-chat fallback. It cannot invoke an LLM or promise an independent agent.
@@ -124,6 +161,12 @@ Entry point: scripts/graph_review.py. Use Python 3.10+ standard library only.
 - `serve --session PATH --port 0`: start foreground HTTP server and print actual
   local URL. Support `--host` only for loopback by default. An opt-in exact
   `--allowed-origin URL` may support a trusted preview proxy; document constraints.
+- `serve --workspace ROOT --port 0`: expose initialized local sessions directly
+  inside ROOT as a graph catalog.
+- `serve --repository-factory MODULE:CALLABLE --repository-config JSON_PATH
+  --port 0`: serve an existing custom repository pair. Configuration is a JSON
+  object; factory code is a trusted startup dependency. Select exactly one source:
+  session, workspace, or repository factory. These commands serve shipped assets.
 - `status --session PATH`: emit state JSON for agent review.
 - `wait --session PATH --after-version N --timeout 20`: return state plus a changed
   boolean when a new version arrives or timeout elapses. Timeout is 0 through 30
@@ -135,6 +178,10 @@ Entry point: scripts/graph_review.py. Use Python 3.10+ standard library only.
   validate and commit a new proposal, never a final graph.
 - `annotate --session PATH --target-type TYPE [--target-id ID] --kind KIND
   --text TEXT --source chat|agent [--source-ref REF] --expect-version N`.
+- `edit-annotation --session PATH --id ID [--text TEXT] [--kind KIND]
+  --source chat|agent --expect-version N`: edit text and/or kind, retaining audit.
+- `delete-annotation --session PATH --id ID --source chat|agent
+  --expect-version N`: tombstone a note without erasing its review history.
 - `resolve --session PATH --id ID --disposition TYPE --text TEXT --source
   chat|agent --expect-version N`; `reopen --session PATH --id ID --expect-version N`.
 - `complete-review --session PATH --summary TEXT --expect-version N`: acknowledge

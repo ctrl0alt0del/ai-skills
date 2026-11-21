@@ -11,6 +11,14 @@ handoffs explicit and validate their lineage and candidate accounting. The final
 report remains schema `1.0`; execution provenance is saved separately. The host
 launches the agents; no model API runner has been added.
 
+**Implementation update, 2026-11-21:** Behavior Graph Builder now launches a
+prebuilt review app maintained in `apps/behavior-graph-review/`; its distribution
+ships with the skill. The UI and HTTP server depend on separate graph and human
+review repository contracts. Local sessions remain the bundled storage adapter,
+with a multi-graph catalog and a factory for replacement adapters. Annotation
+editing and audited deletion are implemented. Normal skill use never creates or
+builds the app. S3 and other remote adapters remain integration work.
+
 ## Contents
 
 1. [Start here](#1-start-here)
@@ -67,7 +75,7 @@ The graph is reusable context that helps the refinement agent find a relevant ne
 
 Refinement must also work before a permanent graph exists. It supports repository-backed, documentation-only, and requirement-only analysis, constructing a temporary impact map when useful.
 
-The user's explicit builder requirements were: start a server and an understandable review frontend on first use; allow annotations; revise in one or more rounds; continue through chat when useful; and create the final graph only after the current proposal is settled and approved.
+The user's explicit builder requirements were: start a server and an understandable review frontend on first use; allow annotations; revise in one or more rounds; continue through chat when useful; and create the final graph only after the current proposal is settled and approved. The subsequent app requirement is to develop and build the app independently, ship its distribution with the skill, and isolate graph reads and human-review CRUD behind replaceable repositories.
 
 ## 3. Research and prior discussion
 
@@ -127,7 +135,9 @@ This table records choices expressed by the user or embodied in the current inst
 | Preserve unknowns and accepted gaps | Human review can settle how a limitation is represented without inventing knowledge about an inaccessible service. |
 | Keep browser and chat review in one session | A modality change should not lose feedback, create contradictory copies, or bypass approval. |
 | Require approval of the exact settled proposal | Reviewing an older graph does not authorize a changed graph. One successful round is sufficient. |
-| Bundle a standard-library server and standalone frontend | First use can start the review without scaffolding a framework project. Deployment and large-scale collaboration remain separate concerns. |
+| Develop the review app separately and ship its built distribution | Normal skill use launches known, reviewed assets without creating an app or invoking frontend build tooling. The manifest and build check detect missing, corrupted, or stale distribution files. |
+| Inject separate graph and human-review repositories | The UI can read graphs and save review data without knowing storage paths or database drivers. HTTP and local SQLite are bundled adapters; storage-specific credentials stay behind the API. |
+| Use explicit immutable revision references and conditional review writes | Separate storage systems cannot share an assumed transaction. Review and history reads name their exact graph revision; stale writes fail rather than overwriting concurrent feedback or approving different content. |
 | Use optimistic version checks for semantic mutations | The agent and reviewer can act concurrently; stale edits must be surfaced and reconciled. |
 | Keep agent presence outside semantic review state | A heartbeat should not invalidate human approval. A running server must not imply that an AI is continuously running. |
 | Export a complete graph plus index and node records | Consumers can retrieve focused context while retaining a canonical complete representation and provenance. |
@@ -174,7 +184,7 @@ The [taxonomy](skills/requirement-refinement/references/edge-case-taxonomy.md) a
 
 ### Behavior Graph Builder
 
-The agent initializes a separate review directory and starts the server before lengthy investigation. It authors a proposal from the available evidence, validates it, and submits it to the session. The runtime does not extract the graph from code.
+The agent initializes a separate review directory and starts the packaged server before lengthy investigation. The server serves the released `assets/review-app/dist/`; the skill never generates a frontend, installs Node packages, or builds the app during use. The agent authors a proposal from available evidence, validates it, and submits it to the session. The runtime does not extract the graph from code.
 
 The review cycle is:
 
@@ -188,11 +198,34 @@ The review cycle is:
 
 A new proposal retains annotations and snapshots. It reopens resolved notes whose directly referenced target changed or disappeared; graph-level notes reopen when graph content changes. An identical proposal does not reopen them. New proposals and semantic feedback changes invalidate earlier approval.
 
+Reviewers can edit annotation text/kind and delete notes. Editing preserves the
+original identity/target/source and reopens settled feedback; deletion records a
+tombstone and its prior value in audit. Deleted notes are hidden from active
+review and do not reopen on a new proposal. Both operations invalidate previous
+approval. CLI `edit-annotation` and `delete-annotation` use the same domain rules.
+
 Approval requires no open notes and no pending review request. It records the round, graph digest, and review-state digest. Export rechecks these and the expected state version. The agent must not approve on the user's behalf. Recorded chat text and a conversation reference document approval; they do not cryptographically authenticate a human identity.
 
 ### Live feedback and chat continuation
 
-The viewer saves data to the same SQLite session used by the CLI. It does not invoke an LLM.
+The viewer uses injected `GraphRepository` and `HumanReviewRepository` ports. Its
+default HTTP adapters use the packaged API; local server adapters save to the
+same SQLite sessions used by the CLI. The viewer does not invoke an LLM. The
+graph selector lists initialized sessions when launched with `serve --workspace`;
+`serve --session` remains a catalog of one. A configured repository factory can
+replace graph reads and review writes independently.
+
+Review responses exclude graph content and reference a graph ID and immutable
+revision. Every historical round also carries its own `graph_revision`; numeric
+round labels are never assumed to be storage revisions. The app reads the review
+and then its exact referenced graph, rejects mismatches, and ignores late responses
+after graph/round switching. Drafts and layout are scoped by graph identity.
+
+The default local adapter retains the established workflow implementation in
+`Store`. A custom human-review adapter must implement the same conditional-write,
+audit, and approval semantics; the abstraction is a protocol, not a distributed
+transaction coordinator. Remote proposal authoring/export is not implemented by
+the local session CLI. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
 
 While the host keeps the agent active, `wait --after-version N --timeout 20` returns when review state changes or the timeout expires. The supported timeout is 0–30 seconds; zero provides a nonblocking presence pulse. Presence expires after 35 seconds and does not increment `state_version` or alter approval. `disconnect` clears it. The skill pauses after three idle waits instead of polling indefinitely.
 
@@ -304,7 +337,11 @@ Complete past graph snapshots remain in the review SQLite database. The export d
 | [chat-review.md](skills/behavior-knowledge-graph-builder/references/chat-review.md) | Same-session review through chat |
 | [graph_model.py](skills/behavior-knowledge-graph-builder/scripts/graph_model.py) | Validation, canonical hashes, SQLite state/audit, concurrency, approval, export |
 | [graph_review.py](skills/behavior-knowledge-graph-builder/scripts/graph_review.py) | CLI and HTTP routes over the same Store |
-| [review.html](skills/behavior-knowledge-graph-builder/assets/review.html) | Standalone DOM/SVG viewer and review controls |
+| [review app source](apps/behavior-graph-review) | Maintained DOM/SVG viewer, injected repository contracts, HTTP adapters, controller, deterministic build, and frontend tests |
+| [packaged review app](skills/behavior-knowledge-graph-builder/assets/review-app/dist) | Built HTML/ES-module/CSS assets and hash manifest shipped with the skill |
+| [graph_repositories.py](skills/behavior-knowledge-graph-builder/scripts/graph_repositories.py) | Graph and human-review ports, local catalog/adapters, and trusted factory loading |
+| [repository-contract.md](skills/behavior-knowledge-graph-builder/references/repository-contract.md) | Adapter semantics, revision consistency, CRUD, and composition configuration |
+| [test_graph_repositories.py](tests/test_graph_repositories.py) | Repository, CRUD, HTTP, legacy session, approval, and packaged-asset regressions |
 | [example-graph.json](skills/behavior-knowledge-graph-builder/assets/example-graph.json) and [example-sources.md](skills/behavior-knowledge-graph-builder/assets/example-sources.md) | Fictional runtime demonstration; never evidence about a user's application |
 | [refinement SKILL.md](skills/requirement-refinement/SKILL.md) | Evidence retrieval, impact exploration, scenario generation, consolidation |
 | [refinement references](skills/requirement-refinement/references) | Relationship semantics, scenario taxonomy, report schema |
@@ -317,12 +354,12 @@ Complete past graph snapshots remain in the review SQLite database. The export d
 
 Builder runtime details that matter when modifying it:
 
-- Python 3.10+ and the standard library; standalone frontend assets.
+- Python 3.10+ and the standard library at runtime. Node 18+ is used only to develop/build the app; there is no runtime frontend build or package install.
 - A separate session directory containing `review.sqlite3`; do not put mutable reviews inside the installed skill.
 - SQLite WAL, round snapshots, audit records, and optimistic `state_version` checks. Semantic writes use `BEGIN IMMEDIATE`.
-- Server routes expose state, health, rounds, annotations, resolution/reopening, review requests, and approval. CLI operations also author proposals and export.
+- Server routes expose a graph catalog, immutable graph snapshots, separate review state, annotation CRUD, resolution/reopening, review requests, and approval. Legacy single-session routes remain available. Local CLI operations also author proposals and export.
 - The frontend polls full state every 3.5 seconds. Its initial layout groups node kinds into three columns; it is not a semantic-clustering or force-directed implementation.
-- Unsubmitted note drafts live in browser session storage; submitted notes live in SQLite. Stale edits return a conflict, preserve the text, load current state, and require deliberate retry.
+- Unsubmitted note drafts live in browser session storage per graph ID; submitted notes go through the review repository (SQLite by default). Stale edits return a conflict, preserve text, load current state, and require deliberate retry.
 - Loopback is the default. Host/Origin checks, CSRF protection, JSON-only mutations, and named routes limit access. The server does not serve arbitrary project files.
 - `--allowed-origin` supports an already trusted preview proxy. It is not authentication; user accounts and public hosting are outside the current runtime.
 - Export stages files and publishes a new directory by rename. It refuses existing destinations. Filesystem publication and the SQLite receipt are separate operations, so crash recovery needs explicit testing.
@@ -336,7 +373,9 @@ python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py --help
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py validate --graph skills/behavior-knowledge-graph-builder/assets/example-graph.json
 python3 skills/requirement-refinement/scripts/validate-report.py --help
 python3 skills/requirement-refinement/scripts/review_workflow.py --help
-python3 -m unittest discover -s tests -p 'test_refinement_review.py'
+python3 -m unittest discover -s tests -p 'test_*.py'
+node --test apps/behavior-graph-review/test/*.test.js
+node apps/behavior-graph-review/build.mjs --check
 ```
 
 Validate a newly produced refinement report with:
@@ -359,7 +398,9 @@ For a viewer check, initialize a new temporary session and serve it using the co
 | Live refinement trial, 2026-11-20 | A fresh coordinator launched distinct business, failure, and judge contexts against a fixed seven-file fictional booking project. The investigators produced 13 and 14 candidates; the judge accounted for all 27 and consolidated them into 18 findings: 6 decisions, 7 investigations, and 5 regressions. Finalization and the existing report validator passed; all seven source files remained unchanged. |
 | Reported by the original development session | Isolated checks for malformed input, reference integrity, restart persistence, concurrent edits, stale writes, annotation reopening, approval invalidation, export gates/manifests, HTTP guards, and nonsemantic presence |
 | Reported by the original development session | A small fictional booking/cancellation trial produced an initial proposal with open questions and stopped before final export |
-| Not established | A repeatable builder test suite or CI; a successful live browser walkthrough; benchmark precision/recall or exhaustive edge-case coverage; automatic graph-to-report interoperability |
+| Added for the prebuilt app/repository update | 19 backend repository/HTTP tests and 21 frontend controller/adapter/build tests passed, together with the 22 existing refinement tests. Exact distribution checks passed for both copies. An optional browser smoke harness is committed but could not run here. |
+| Live packaged-builder invocation, 2026-11-21 | A fresh agent initialized a session, launched the shipped server, and saved a valid first proposal of 20 nodes and 22 relationships from seven unchanged fictional source files. It used chat presentation and ran no frontend generation, package installation, or build. Approval stayed empty and no final export occurred. Separate health requests could not reach the long-running local process in this environment, so no usable preview URL was claimed. |
+| Not established | Complete builder state-machine/export coverage or CI; a successful live browser walkthrough; benchmark precision/recall or exhaustive edge-case coverage; automatic graph-to-report interoperability |
 
 The historical builder checks and booking trial were development exercises. Their
 temporary harnesses and fixtures are not committed here. The newly committed
@@ -373,7 +414,7 @@ trial's project and reports were temporary development artifacts, not a committe
 benchmark. It demonstrates one successful end-to-end invocation, not precision,
 recall, exhaustive coverage, or source-check authentication by the validator.
 
-The original browser walkthrough was blocked by the available environment's reachability and browser restrictions. Static JavaScript checks and HTTP tests do not establish visual layout, usability, keyboard operation, or a working private-preview deployment.
+The original browser walkthrough was blocked by the available environment's reachability and browser restrictions. The 2026-11-21 browser attempt was also blocked: local Chromium could not create required sockets, and the supported cloud browser could not reach the local server and then denied observation under its URL policy. No security restrictions were bypassed. Static JavaScript, controller, and HTTP tests do not establish visual layout, usability, keyboard operation, or a working private-preview deployment. The optional browser smoke harness remains unverified in this environment.
 
 ### Limits to preserve honestly
 
@@ -392,7 +433,7 @@ These are proposed continuation tasks, not already implemented features or instr
 
 ### Priority 1: make current behavior reproducible
 
-1. **Extend regression coverage and add CI.** Refinement artifact gates now have committed tests. Add reproducible builder coverage for invalid references, unresolved notes, pending review, exact-version approval, new-feedback invalidation, changed/removed target reopening, identical proposals, concurrent writes, restart persistence, stale browser edits, heartbeat isolation, HTTP access checks, and export hashes. Use isolated fixtures rather than user approval records.
+1. **Extend regression coverage and add CI.** Refinement artifact gates, builder repository/CRUD/HTTP boundaries, and frontend coordination/build now have committed tests. Extend builder coverage for complete proposal/approval/export state-machine behavior, restart persistence, concurrent operations, heartbeat isolation, and export hashes. Run the optional browser smoke harness in a supported environment. Use isolated fixtures rather than user approval records.
 2. **Exercise the real browser workflow.** Verify a supported local/private-preview launch, readable graph and list views, annotations, stale-edit recovery, review requests, approval, responsive layout, keyboard interaction, and chat resumption.
 3. **Test export crash recovery.** Simulate interruption around publication and receipt persistence. Define how to recover an orphaned output directory or stale lock without overwriting a valid export.
 

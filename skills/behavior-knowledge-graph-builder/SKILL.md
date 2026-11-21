@@ -26,6 +26,9 @@ current version. Creating this skill or requesting a graph is not that approval.
 - Read [repository-contract.md](references/repository-contract.md) when selecting
   an existing graph catalog, reconnecting to saved feedback, or configuring an
   already implemented storage adapter.
+- Read [repository-config.md](references/repository-config.md) for `config.json`
+  bindings, filesystem/SQLite/S3/HTTP adapters, explicit import/provisioning, and
+  the capabilities available to the app and agent in each configuration.
 - Use `scripts/graph_review.py` for session management, the server, validation, and
   finalization. Use the script's absolute path or run from the skill directory.
 - Launch the prebuilt app in `assets/review-app/dist/` through the packaged server.
@@ -74,6 +77,16 @@ such as `<project>/.behavior-graph-review/<scope>` on a persistent filesystem. H
 host storage rules. If source access is missing, initialize the empty viewer and
 ask for the project or specifications; do not substitute a fictional graph.
 
+Honor a supplied server `config.json`. Use `serve --config PATH` and the same
+`--config PATH` for feedback commands, or save a connection with `connect
+--connection PATH --config PATH`. Select graph and review repositories from its
+separate bindings. Do not infer storage from a graph ID, change bindings to make an
+error disappear, or create a parallel local review when configured data exists.
+Changing configuration does not migrate data: use explicit `import-session` for
+an existing local review, or `register-graph` then `init-review` for a first draft
+in document storage, as described in the configuration guide. Inspect supported
+authoring and export capabilities before promising the complete workflow.
+
 ```bash
 python3 /absolute/skill/scripts/graph_review.py init --session /absolute/review-session --title "Application behavior review"
 python3 /absolute/skill/scripts/graph_review.py serve --connection /absolute/review-session/connection.json --port 0
@@ -90,8 +103,9 @@ A session exposes a catalog of one graph. A workspace connection lists initializ
 session directories directly inside its root. Use `feedback-graphs --connection
 PATH` to discover IDs, then select the intended graph through the descriptor's
 `graph_id` or `--graph-id`; never silently choose the first graph. Reuse configured
-repository adapters when supplied; authoring a new S3, database, or API adapter is
-application development and requires its own task, not improvisation during review.
+repository adapters when supplied. Filesystem, SQLite document storage, S3, HTTP,
+and legacy sessions are bundled. Authoring any further database/service adapter
+is application development and requires its own task, not improvisation during review.
 
 Use the host's long-running command facility for `serve`, capture the actual URL
 and process handle, and verify `/api/health`. Reuse a healthy server for the same
@@ -103,7 +117,8 @@ URL. In a cloud environment, use only a supported private preview/port-forward
 or shared-browser capability and verify that path. A cloud-local localhost URL
 is not automatically reachable from the user's PC. If access cannot be provided,
 say so plainly and continue the same review in chat. Do not promise an always-on
-server after the environment stops. Python 3.10+ is the only runtime dependency;
+server after the environment stops. Python 3.10+ suffices for local and HTTP storage;
+S3 additionally needs an installed current `boto3` and authorized SDK credentials.
 use the available interpreter (`python3`, `python`, or `py -3` on Windows) and
 substitute it in the examples below. Do not assume a particular user's shell.
 If unavailable and installation is not available, continue in chat and record the
@@ -137,6 +152,13 @@ python3 /absolute/skill/scripts/graph_review.py propose --session /absolute/revi
 Replace the example version with the value just read from `status`. Never retry a
 stale mutation blindly. Read and merge concurrent feedback first. Use structured
 subprocess arguments for user-supplied text rather than unsafe shell interpolation.
+For filesystem, SQLite, or S3 document reviews, use `--config PATH` or the saved
+`--connection PATH` plus the selected graph ID in these authoring commands. Use
+`propose` to advance the review's pinned revision; registering a snapshot alone
+does not advance it. Preserve opaque storage revisions independently of round
+numbers. The configured graph repository must support publication. HTTP review
+adapters need their own trusted authoring integration; never label agent work as
+a human UI action to bypass a missing capability.
 
 ## 3. Present the proposal and invite review
 
@@ -206,7 +228,7 @@ saving a note alone does not mean the reviewer is finished. For interrupted work
 inspect receipts, resolutions, and proposal history before repeating an action.
 
 Combine browser annotations and chat feedback into the same ledger. In a local
-session, record substantive chat corrections with `annotate --source chat` and a
+session or configured document review, record substantive chat corrections with `annotate --source chat` and a
 real conversation reference. Preserve their wording; do not invent a user statement.
 
 For each pending annotation revision, inspect the relevant evidence and either update the
@@ -246,10 +268,12 @@ currently pending item processed after handling an earlier snapshot.
 Use one active feedback consumer. Work is recoverable but may be repeated after
 an interruption between saving an outcome and recording its receipt. Reuse saved
 outcomes where still applicable rather than creating duplicate proposals or notes.
-If an adapter lacks feedback processing support, report the capability gap. Remote
-feedback access does not add generic graph authoring/export: use an existing
-authorized integration for those changes, or leave the affected work pending and
-explain what could not be saved. Never mark failed persistence as completed work.
+If an adapter lacks feedback processing support, report the capability gap.
+Configured document reviews support proposal and agent/chat authoring; HTTP-only
+repositories need an existing authorized authoring integration. Final artifact
+export remains local-session-only. Leave affected work pending when its required
+changes cannot be saved, and explain the missing capability. Never mark failed
+persistence as completed work.
 
 When questions are answered without changing the graph, resolve the notes and run
 `complete-review --summary ... --expect-version N` to clear the feedback request
@@ -278,6 +302,12 @@ state, handle the feedback, and obtain approval of the revised state. The runtim
 rejects export until the current version is approved with no open feedback.
 
 ## 6. Create the final graph
+
+Confirm that the selected backend supports final export. The supplied exporter
+currently operates on local sessions; document and HTTP reviews do not yet expose
+this final bundle operation. Preserve their settled review and approval and report
+that limitation when encountered. Do not copy a stale local session or invent a
+new approval to bypass the selected repository.
 
 Only now run `export`, using the current state version and a new output directory.
 For a local project, prefer `docs/behavior-graph` if it does not exist. If it already

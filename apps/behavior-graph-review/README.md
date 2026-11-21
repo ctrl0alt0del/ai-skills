@@ -18,16 +18,125 @@ The application has two replaceable repositories:
 The contracts are in [src/repositories.d.ts](src/repositories.d.ts). Rendering in
 [src/app.js](src/app.js) receives both repositories by injection. The
 [src/controller.js](src/controller.js) coordinates them without DOM, HTTP,
-filesystem, database, or credential access. The bundled
-[src/http-repositories.js](src/http-repositories.js) implements the interfaces
-using the local server's HTTP API. Only [src/main.js](src/main.js) chooses the
-concrete adapters.
+filesystem, database, or credential access. [src/main.js](src/main.js) loads
+`./config.json`, and [src/repository-config.js](src/repository-config.js) creates
+the named repositories and independently binds graph reads and review writes.
+Invalid configuration stops startup with a visible error; it does not silently
+select a different store.
 
-A deployment can retain the HTTP adapters and replace either server repository
-through the server's repository factory. Filesystem, S3, database, and remote API
-credentials belong in those server adapters. Alternatively, a different browser
-transport can implement these interfaces and be supplied at the composition
-root; the rendering and controller do not change.
+The browser and server have separate concrete adapters:
+
+| Layer | Adapter | Capability |
+| --- | --- | --- |
+| Browser | [HTTP](src/http-repositories.js) | Graph reads, review CRUD/workflow, and optional agent feedback methods |
+| Browser | [JSON documents](src/json-graph-repository.js) | Read a graph catalog and immutable snapshots from static HTTP(S) storage |
+| Browser | [Memory snapshots](src/memory-graph-repository.js) | Read an explicit catalog and detached immutable snapshots supplied in configuration |
+| Server | Filesystem | Store catalog, graph snapshots, review state, and audit as JSON documents |
+| Server | SQLite | Store the same documents with transactional conditional writes |
+| Server | S3 | Store the same documents with object-version conditional writes |
+| Server | HTTP API | Forward graph, human-review, and feedback operations to another compatible service |
+| Server | Session | Reuse an existing local SQLite review session or workspace of sessions |
+
+Filesystem paths, database access, and S3/API credentials stay on the server.
+The browser can use the HTTP adapter while the server independently selects any
+supported graph and review storage. A custom adapter can still implement the
+same interfaces without changing rendering or controller code.
+
+## Configuration
+
+### Server storage
+
+The server configuration uses `behavior-review-config/1`. Each binding names an
+entry in `repositories`, so graph content and human review can live in different
+stores:
+
+```json
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "graphFiles": { "type": "filesystem", "path": "./data/graphs" },
+    "reviewDatabase": { "type": "sqlite", "path": "./data/reviews.sqlite3" }
+  },
+  "bindings": { "graphs": "graphFiles", "reviews": "reviewDatabase" },
+  "graph_id": "checkout"
+}
+```
+
+Paths resolve relative to this configuration file. `s3` accepts `bucket` and
+optional `prefix`, `region`, `profile`, and `endpoint_url`; it uses the SDK's
+credential providers. `http` accepts `base_url` and optional `auth_token_env`,
+which names an environment variable rather than storing a token. `session`
+selects either `session` or `workspace`. Built-in S3 support requires the optional
+`boto3` dependency and an endpoint that supports conditional object writes.
+
+From the repository root, register a valid proposal and initialize its review:
+
+```bash
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py register-graph --config ./config.json --graph ./proposal.json --graph-id checkout --revision proposal-1
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py init-review --config ./config.json --graph-id checkout
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --config ./config.json --port 0
+```
+
+`import-session --config PATH --session PATH` copies an existing local review
+session into configured document storage. A saved connection can refer to the
+same configuration with `connect --connection PATH --config PATH`.
+
+### Public browser configuration
+
+The frontend configuration uses the distinct schema
+`behavior-review-client-config/1`. The server exposes only this public object at
+`/config.json`; server storage locations and credentials are not included. By
+default, it supplies one same-origin HTTP repository bound to both roles.
+
+To choose browser transports, put a public object like this in the optional
+`client` property of the server configuration. A standalone static deployment can
+serve the same object as its own `config.json`:
+
+```json
+{
+  "schema_version": "behavior-review-client-config/1",
+  "repositories": {
+    "publishedGraphs": { "type": "json", "url": "https://graphs.example/project/catalog.json" },
+    "reviewService": { "type": "http", "base_url": "" }
+  },
+  "bindings": { "graphs": "publishedGraphs", "reviews": "reviewService" }
+}
+```
+
+HTTP implements both roles. JSON and memory implement graph reads only; binding
+either to `reviews` is an explicit configuration error. The memory form is
+`{ "type": "memory", "catalog": { ... }, "snapshots": [ ... ] }`, with the
+catalog declaring each graph's current revision and snapshots containing every
+declared current revision plus any history. Snapshots are copied on input and
+output so a caller cannot mutate the repository's stored version.
+
+A JSON catalog is `{ "schema_version": "behavior-graph-catalog/1", "graphs":
+[ ... ] }`. Each entry has `id`, `title`, `revision`, and `digest`. Immutable
+snapshots contain those fields plus `graph`, and use this path relative to the
+catalog's directory:
+
+```text
+graphs/<sha256-of-UTF8-graph-id>/<sha256-of-UTF8-revision>.json
+```
+
+This matches the server document stores. A pinned historical request reads its
+exact snapshot without consulting the latest catalog. Latest-version requests
+refresh the catalog; successful immutable reads are cached and returned as
+detached copies.
+
+Relative URLs resolve against the browser configuration's URL, preserving its
+directory prefix. HTTP `base_url` is a service prefix; the adapter appends
+`/api/...`. URLs require HTTPS except for HTTP on a loopback host. Embedded
+credentials, query strings, fragments, and invalid URL characters are rejected.
+Cross-origin deployments must permit the app origin through CORS, including any
+required review token headers. Use the server HTTP adapter for private upstream
+credentials.
+
+Keep deployment configuration outside the installed app assets. The shipped
+`config.json` is a default covered by the distribution manifest; the server's
+public projection replaces its response without editing that authenticated file.
+See [repository configuration](../../skills/behavior-knowledge-graph-builder/references/repository-config.md)
+for complete schemas, adapter options, lifecycle commands, and migration details.
 
 ## Repository guarantees
 
@@ -60,12 +169,13 @@ graph identity; the repositories remain authoritative for graphs and reviews.
 
 ## Agent feedback and shared connections
 
-The review adapter also can implement the optional Python
-`FeedbackProcessingRepository` capability. It exposes pending feedback and
-version-bound acknowledgment to the agent CLI; it is not a third frontend storage
-repository or a model running in the browser. Adapters without that capability
-remain usable for the existing review UI and must report unsupported processing
-commands clearly.
+The review adapter also can implement the optional
+`FeedbackProcessingRepository` capability. The bundled storage adapters and HTTP
+client expose pending feedback and version-bound acknowledgment for the agent;
+the human review UI does not acknowledge feedback automatically. This is not a
+third storage repository or a model running in the browser. Custom adapters
+without that capability remain usable for the existing review UI and must report
+unsupported processing commands clearly.
 
 Annotation snapshots add `feedback_revision`, `processed_revision`, derived
 `processing_status`, and a `processing_receipt`. The receipt records the handled
@@ -88,8 +198,9 @@ advances the review version but stays outside the semantic approval digest.
 Use one saved `behavior-review-connection/1` descriptor for both `serve
 --connection PATH` and the agent's `feedback-status`, `pending-feedback`, and
 `mark-processed` commands. `init` writes a local session's `connection.json`;
-`connect` records an existing session, workspace catalog, or trusted adapter
-factory. Relative paths resolve against the descriptor. A graph must be selected
+`connect` records an existing session, workspace catalog, configured repository
+pair, or trusted adapter factory. The same commands also accept `--config PATH`
+directly. Relative paths resolve against the descriptor/configuration. A graph must be selected
 explicitly by the descriptor or `--graph-id`, with `feedback-graphs` available for
 discovery. Storage credentials stay in server/adapter configuration.
 
@@ -97,8 +208,11 @@ The “send feedback” action remains a readiness signal; saving a note alone n
 not mean the reviewer finished. Processing state persists independently of that
 signal. An active or resumed skill reads the repository, with bounded polling
 available; there is no background AI, permanent server guarantee, or worker lease.
-Commands can load the adapter without a running viewer. Remote graph authoring
-and export still require their own integration.
+Commands can load the adapter without a running viewer. The document adapters
+support proposal registration and review initialization through `register-graph`
+and `init-review`, with `import-session` for existing work. Remote HTTP authoring
+requires a separate integration. Final graph artifact export remains the local
+session workflow.
 
 The complete schemas, CLI examples, and migration rules are in the
 [repository contract](../../skills/behavior-knowledge-graph-builder/references/repository-contract.md).
@@ -126,12 +240,19 @@ node apps/behavior-graph-review/build.mjs --check --out /absolute/skill/assets/r
 ```
 
 The deterministic build fingerprints native ES modules and CSS, rewrites their
-static references, and emits `index.html` plus `manifest.json`. It does not
+static references, and emits `index.html`, a stable `config.json`, and
+`manifest.json`. It does not
 transpile or minify JavaScript. The manifest records SHA-256 hashes for every
 served artifact and a source/build digest; it includes no timestamps or machine
 paths. `--check` verifies both the asset set and bytes without rewriting them.
-Build refuses to overwrite an unrelated directory. The server serves only files
-named in this manifest; the skill never repairs missing assets by generating UI.
+Build refuses to overwrite an unrelated directory. The server serves only assets
+named in this manifest plus its explicit API/public-configuration routes; the
+skill never repairs missing assets by generating UI.
+
+Tests exercise independent bindings, malformed configuration, visible startup
+failure, immutable graph reads, document identity checks, and conditional review
+writes. S3 tests use controlled clients; no live cloud-storage integration test
+has been performed for this change.
 
 ## Optional rendered-app check
 
@@ -150,8 +271,6 @@ node apps/behavior-graph-review/test/browser-smoke.mjs
 `CHROMIUM_EXECUTABLE` can select an existing compatible Chromium executable.
 These are test-only dependencies; they are not needed by the build or skill.
 
-The November 2026 implementation session passed the Node tests, but the rendered
-browser check could not run because the environment prohibited Chromium's
-required socket operation. This is not a successful browser/visual validation;
-run the smoke check in a supported development environment before claiming that
-coverage.
+The automated unit and adapter checks are not rendered browser or visual
+validation. Run the smoke check in a supported development environment before
+claiming that coverage.

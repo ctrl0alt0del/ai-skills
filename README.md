@@ -34,8 +34,9 @@ Copy either directory from `skills/` into your local Codex skills directory
 (`$CODEX_HOME/skills`, normally `~/.codex/skills`). Keep its references, scripts,
 and assets together.
 
-The bundled Python tools use the standard library. Behavior Graph Builder and
-the refinement review helper require Python 3.10 or newer.
+Behavior Graph Builder and the refinement review helper require Python 3.10 or
+newer. Local files, SQLite, and HTTP use the Python standard library; S3 storage
+additionally requires `boto3`.
 
 Invoke the installed skills with `$behavior-knowledge-graph-builder` or
 `$requirement-refinement`.
@@ -54,11 +55,20 @@ The UI uses two injected repositories:
 | `GraphRepository` | List available graphs and load a graph at an immutable revision |
 | `HumanReviewRepository` | Read review state; create, read, edit, and delete annotations; resolve/reopen notes; request review and approve a settled version |
 
-The browser's HTTP adapters and the server's local storage adapters are separate
-from the UI. The default local catalog uses existing SQLite review sessions. A
-repository factory can replace either server-side adapter with filesystem, S3,
-database, or API integration code. Those additional production adapters are not
-included. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
+Both roles are configured independently by name in `config.json`. The included
+server adapters are filesystem JSON documents, SQLite, S3, a compatible HTTP API,
+and the existing local session/workspace adapter. Storage paths and credentials
+stay on the server. The default local workflow continues to use SQLite review
+sessions.
+
+The browser loads a separate public configuration. Its concrete adapters are
+HTTP for graph reads and review CRUD, JSON catalogs for published graph snapshots,
+and memory for an explicit graph catalog plus immutable snapshots. JSON and
+memory are graph-read adapters; review writes use a compatible HTTP service.
+Invalid configuration produces a visible startup error rather than silently
+changing storage. See the [app README](apps/behavior-graph-review/README.md),
+[repository configuration](skills/behavior-knowledge-graph-builder/references/repository-config.md),
+and [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
 
 Launch one session or a catalog of initialized direct child sessions:
 
@@ -67,18 +77,73 @@ python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --workspace /absolute/reviews-root --port 0
 ```
 
+### Choose graph and review storage
+
+For example, this server configuration keeps graph JSON on disk and human reviews
+in SQLite. Paths are relative to the configuration file:
+
+```json
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "graphs": { "type": "filesystem", "path": "./data/graphs" },
+    "reviews": { "type": "sqlite", "path": "./data/reviews.sqlite3" }
+  },
+  "bindings": { "graphs": "graphs", "reviews": "reviews" },
+  "graph_id": "checkout"
+}
+```
+
+| Server adapter | Configuration fields |
+| --- | --- |
+| `filesystem` | `path` to a JSON document directory |
+| `sqlite` | `path` to a document database |
+| `s3` | `bucket`; optional `prefix`, `region`, `profile`, `endpoint_url` |
+| `http` | `base_url`; optional `auth_token_env` naming a token environment variable |
+| `session` | Either `session` or `workspace` for existing local reviews |
+
+The S3 endpoint must support conditional writes; the adapter uses the SDK's
+credential providers. Existing custom repository factories remain supported.
+
+Register a validated proposal, initialize its review, and launch the shipped app:
+
+```bash
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py register-graph --config ./config.json --graph ./proposal.json --graph-id checkout --revision proposal-1
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py init-review --config ./config.json --graph-id checkout
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --config ./config.json --port 0
+```
+
+Use `import-session --config PATH --session PATH` to copy existing local review
+history into document storage. Graph IDs and revision strings remain independent
+of filenames, object keys, and database locations.
+
+The server exposes a sanitized browser configuration at `/config.json`, using
+schema `behavior-review-client-config/1`. Its default binds both roles to the
+same-origin HTTP service. The optional server `client` property can instead name
+different public HTTP endpoints or select a JSON/memory graph adapter; it never
+exposes the server repository definitions. Keep deployment settings in the
+external server configuration rather than editing the installed app assets.
+
 ### Feedback pickup across turns
 
 The app and skill share a saved repository connection. A new session's `init`
 command creates `connection.json`; serving an existing local session also creates
-or reuses it. For a workspace or an existing custom adapter, use `connect` to save
-the configuration. The skill reads that descriptor instead of assuming where
-the app stores reviews.
+or reuses it. For configured storage, a workspace, or an existing custom adapter,
+use `connect` to save the connection. The skill reads that descriptor instead of
+assuming where the app stores reviews.
 
 ```bash
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --connection /absolute/review-session/connection.json --port 0
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py feedback-status --connection /absolute/review-session/connection.json
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py pending-feedback --connection /absolute/review-session/connection.json
+```
+
+The same feedback commands accept `--config PATH`. Save a connection to that
+configuration when the app and future agent turns should reuse it:
+
+```bash
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py connect --connection ./connection.json --config ./config.json
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py pending-feedback --config ./config.json
 ```
 
 Use `feedback-graphs` to list the catalog and `--graph-id ID` when the descriptor
@@ -96,10 +161,13 @@ feedback” action remains the signal that the reviewer is ready for the agent;
 pending feedback survives subsequent proposal changes and interrupted turns.
 
 Feedback access uses an optional server-side `FeedbackProcessingRepository`
-capability on the review adapter. The bundled local adapter implements it; an
+capability on the review adapter. The bundled storage adapters implement it; an
 older adapter can still display the app and explicitly report that processing
 support is unavailable. Feedback commands can reconnect without a running viewer
-server. They do not run a background model or add remote graph authoring/export.
+server. They do not run a background model. The document adapters support graph
+registration, review initialization, and session import. HTTP agent authoring
+requires a separate integration, and final artifact export remains a local
+session operation.
 Use one active feedback consumer and inspect saved outcomes before repeating work
 after interruption. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md)
 for connection schemas, receipt fields, concurrency, and adapter requirements.
@@ -113,8 +181,10 @@ node apps/behavior-graph-review/build.mjs
 node apps/behavior-graph-review/build.mjs --check
 ```
 
-The build fingerprints assets and records their hashes; it does not transpile or
-minify JavaScript. The server validates the shipped manifest before serving files.
+The build fingerprints assets, includes a stable public `config.json`, and records
+their hashes; it does not transpile or minify JavaScript. The server validates the
+shipped manifest before serving files, then serves its public configuration
+projection without modifying the bundled default.
 
 ## Development checks
 
@@ -127,7 +197,9 @@ node apps/behavior-graph-review/build.mjs --check
 ```
 
 These cover refinement artifact accounting and compatibility, graph/review adapter
-contracts, scoped annotation CRUD, version conflicts, approval invalidation, built
-asset serving, feedback pickup/receipts, and frontend coordination. They do not measure reasoning accuracy
+contracts, configured storage bindings, scoped annotation CRUD, version conflicts,
+approval invalidation, built asset serving, feedback pickup/receipts, and frontend
+coordination. S3 tests use controlled clients; no live S3 integration test was run
+for this change. These checks do not measure reasoning accuracy
 or authenticate that a host actually created isolated agent contexts. The app's
 README describes the optional browser smoke test and its environment requirements.

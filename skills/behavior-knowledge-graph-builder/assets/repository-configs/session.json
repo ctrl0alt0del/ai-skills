@@ -1,0 +1,7 @@
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "existing": {"type": "session", "session": "./existing-review-session"}
+  },
+  "bindings": {"graphs": "existing", "reviews": "existing"}
+}

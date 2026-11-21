@@ -1,0 +1,7 @@
+{
+  "schema_version": "behavior-review-client-config/1",
+  "repositories": {
+    "local": { "type": "http", "base_url": "" }
+  },
+  "bindings": { "graphs": "local", "reviews": "local" }
+}

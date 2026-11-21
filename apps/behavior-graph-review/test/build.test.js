@@ -12,6 +12,8 @@ test('build is reproducible and manifest authenticates exactly the served files'
   const manifest = JSON.parse(first.get('manifest.json'));
   assert.equal(manifest.schema_version, 'behavior-review-app-dist/1');
   assert.equal(manifest.entry, 'index.html');
+  assert.equal(JSON.parse(first.get('config.json')).schema_version, 'behavior-review-client-config/1');
+  assert.equal(typeof manifest.files['config.json'], 'string');
   assert.equal(Object.keys(manifest.files).length, first.size - 1);
   for (const [name, hash] of Object.entries(manifest.files)) {
     assert.equal(createHash('sha256').update(first.get(name)).digest('hex'), hash);
@@ -19,6 +21,16 @@ test('build is reproducible and manifest authenticates exactly the served files'
   const html = first.get('index.html');
   assert.match(html, /<script type="module" src="\.\/main\.[a-f0-9]+\.js">\s*<\/script>/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/);
+});
+
+test('packaged configuration has a stable name and participates in stale-build detection', async t => {
+  const out = await mkdtemp(path.join(os.tmpdir(),'review-app-config-build-'));
+  t.after(() => rm(out,{recursive:true,force:true}));
+  await build({out});
+  const filename = path.join(out,'config.json');
+  await writeFile(filename,'{}\n');
+  await assert.rejects(build({out,check:true}),/stale: config.json/);
+  assert.equal(await readFile(filename,'utf8'),'{}\n');
 });
 
 test('check detects stale assets without rewriting them', async t => {

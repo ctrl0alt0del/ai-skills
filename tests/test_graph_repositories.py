@@ -350,7 +350,13 @@ class RepositoryTests(unittest.TestCase):
             for filename, expected in manifest["files"].items():
                 status, body, _ = request(url, "/" + filename)
                 self.assertEqual(status, 200)
-                self.assertEqual(hashlib.sha256(body).hexdigest(), expected)
+                if filename == "config.json":
+                    # Runtime configuration is a deliberate dynamic route; the
+                    # packaged standalone default is still manifest-verified.
+                    self.assertEqual(body, json.loads(before[filename]))
+                    self.assertEqual(hashlib.sha256(before[filename]).hexdigest(), expected)
+                else:
+                    self.assertEqual(hashlib.sha256(body).hexdigest(), expected)
         self.assertEqual({p.name: p.read_bytes() for p in packaged.iterdir() if p.is_file()}, before)
 
     def test_legacy_single_session_api_is_compatible(self):

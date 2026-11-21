@@ -147,6 +147,9 @@ local adapters live in `scripts/graph_repositories.py`. Review snapshots exclude
 graph content and reference `graph_id`, `graph_revision`, and `graph_digest`; load
 that exact graph snapshot to obtain a consistent view. See the repository contract
 for adapter configuration, immutable revisions, and conditional-write guarantees.
+The browser loads its named bindings from public `config.json`. Server storage
+uses the separate private `behavior-review-config/1` schema; see
+[repository-config.md](repository-config.md) for the concrete backends and examples.
 
 ## HTTP interface
 
@@ -158,7 +161,10 @@ Do not log annotation bodies or auth tokens. Remote preview is optional and need
 an explicitly configured origin/proxy; do not bind publicly by default.
 
 - GET `/` serves the prebuilt `index.html`; other static routes are limited to
-  the verified distribution manifest. JavaScript is external, with same-origin CSP.
+  the verified distribution manifest. JavaScript is external. CSP permits network
+  connections only to self and explicitly configured public endpoint origins.
+- GET `/config.json` returns only the public client configuration, defaulting to
+  same-origin HTTP for both ports. It never returns private server storage config.
 - GET `/api/bootstrap` returns `{csrf_token}` for the HTTP adapters.
 - GET `/api/graphs` returns `{graphs:[...]}` with available graph summaries.
 - GET `/api/graphs/{graph_id}?revision=R` returns
@@ -182,6 +188,10 @@ an explicitly configured origin/proxy; do not bind publicly by default.
   review_requested and invalidate approval.
 - POST `/api/graphs/{graph_id}/approve` body: expected_version,
   acknowledge_limits:true, text. Record approval; do not export final files.
+- GET `/api/graphs/{graph_id}/pending-feedback` returns the durable pending inbox.
+- POST `/api/graphs/{graph_id}/mark-processed` body: expected_version,
+  annotation_id, feedback_revision, outcome, summary, processor. Record the exact
+  revision's operational receipt without resolving or approving the review.
 - Mutations return the complete updated review snapshot, without graph content.
   POST, PATCH, and DELETE require `Content-Type: application/json`, a trusted Origin,
   and `X-Review-Token` from bootstrap. Stale versions return 409; malformed input
@@ -196,7 +206,8 @@ an explicitly configured origin/proxy; do not bind publicly by default.
 
 ## Command interface
 
-Entry point: scripts/graph_review.py. Use Python 3.10+ standard library only.
+Entry point: scripts/graph_review.py. Use Python 3.10+; only the optional S3
+backend additionally needs a current boto3 installation.
 
 - `init --session PATH --title TEXT`: create a review session and its
   `connection.json`, returning that path; refuse destructive reuse. Reopening an
@@ -206,12 +217,14 @@ Entry point: scripts/graph_review.py. Use Python 3.10+ standard library only.
   `--allowed-origin URL` may support a trusted preview proxy; document constraints.
 - `serve --workspace ROOT --port 0`: expose initialized local sessions directly
   inside ROOT as a graph catalog.
+- `serve --config CONFIG_JSON --port 0`: load named graph/review bindings from
+  config.json. Restart after editing config; a running server retains its bindings.
 - `serve --repository-factory MODULE:CALLABLE --repository-config JSON_PATH
   --port 0`: serve an existing custom repository pair. Configuration is a JSON
   object; factory code is a trusted startup dependency. Select exactly one source:
-  session, workspace, connection, or repository factory. These commands serve shipped assets.
+  session, workspace, connection, config, or repository factory. These commands serve shipped assets.
 - `connect --connection PATH (--session PATH | --workspace ROOT |
-  --repository-factory MODULE:CALLABLE) [--repository-config JSON_PATH]
+  --config CONFIG_JSON | --repository-factory MODULE:CALLABLE) [--repository-config JSON_PATH]
   [--graph-id ID]`: save a versioned locator shared by the app and agent. Local
   session connections save their exact graph ID automatically; catalogs/custom
   adapters require selection when reading a particular graph. Refuse replacement
@@ -232,10 +245,20 @@ Entry point: scripts/graph_review.py. Use Python 3.10+ standard library only.
   --feedback-revision N --outcome OUTCOME --summary TEXT --processor REF
   --expect-version V`: save one exact revision's processing receipt after work
   succeeds. It is not resolution or approval. These four feedback commands also
-  accept explicit `--session PATH` instead of a connection as a local convenience.
+  accept explicit `--session PATH` or `--config CONFIG_JSON` instead of a connection.
   Custom review adapters need the optional FeedbackProcessingRepository capability
   for pending/acknowledgment; unsupported adapters fail clearly instead of losing
-  feedback. Custom graph authoring/export remains a separate capability.
+  feedback. HTTP/custom graph authoring and final export remain separate capabilities.
+- `config-check --config CONFIG_JSON`: validate structure and role bindings;
+  do not provision storage or claim network connectivity.
+- `register-graph --config CONFIG_JSON [--graph-id ID] --graph JSON --revision R
+  [--title TEXT]`: explicitly register an immutable draft snapshot in a document
+  graph repository and update its catalog. Do not advance an existing review.
+- `init-review --config CONFIG_JSON [--graph-id ID] [--revision R] [--title TEXT]
+  [--summary TEXT]`: create a document review pinned to the selected snapshot.
+- `import-session --config CONFIG_JSON --session PATH`: copy immutable graph
+  rounds and current review/audit to configured document repositories, preserving
+  IDs and refusing to overwrite an existing destination review.
 - `status --session PATH`: emit state JSON for agent review.
 - `wait --session PATH --after-version N --timeout 20`: return state plus a changed
   boolean when a new version arrives or timeout elapses. Timeout is 0 through 30
@@ -266,6 +289,12 @@ Entry point: scripts/graph_review.py. Use Python 3.10+ standard library only.
 
 Commands print useful JSON or concise errors and return nonzero on failure.
 All semantic state mutations except initialization require an expected version.
+`status`, `propose`, annotation/review commands, and `approve-chat` also accept
+`--config CONFIG_JSON` or `--connection PATH`, with optional `--graph-id`, for
+configured session or document repositories. Document `propose` accepts optional
+`--revision R` (otherwise generated); legacy sessions retain numeric round
+revisions. HTTP repositories do not expose trusted agent/chat authoring through
+this CLI. Final artifact export and heartbeat/presence remain local-session-only.
 
 ## Finalization
 

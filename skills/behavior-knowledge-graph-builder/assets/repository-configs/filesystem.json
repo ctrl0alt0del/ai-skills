@@ -1,0 +1,8 @@
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "documents": {"type": "filesystem", "path": "./data/behavior-review"}
+  },
+  "bindings": {"graphs": "documents", "reviews": "documents"},
+  "graph_id": "application-behavior"
+}

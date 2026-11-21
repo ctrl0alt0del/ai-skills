@@ -14,17 +14,29 @@ launches the agents; no model API runner has been added.
 **Implementation update, 2026-11-21:** Behavior Graph Builder now launches a
 prebuilt review app maintained in `apps/behavior-graph-review/`; its distribution
 ships with the skill. The UI and HTTP server depend on separate graph and human
-review repository contracts. Local sessions remain the bundled storage adapter,
-with a multi-graph catalog and a factory for replacement adapters. Annotation
-editing and audited deletion are implemented. Normal skill use never creates or
-builds the app. S3 and other remote adapters remain integration work.
+review repository contracts. Annotation editing and audited deletion are
+implemented. Normal skill use never creates or builds the app. The initial local
+adapter boundary has since been expanded by the configuration release below.
 
 **Feedback update, 2026-11-21:** The app and agent can share a saved repository
 connection. The skill discovers outstanding feedback through an optional review
 adapter capability and records a receipt for each handled feedback revision.
 New edits, withdrawals, reopenings, and human dispositions remain discoverable
 across turns. Processing is separate from note resolution and human approval;
-this change adds neither a background model nor generic remote graph authoring.
+this change adds no background model. Configured document authoring is now
+supported as described below; HTTP authoring still needs its own integration.
+
+**Repository/configuration update, 2026-11-21:** Server storage now includes
+filesystem JSON documents, SQLite documents, S3, a compatible HTTP API, and the
+existing session/workspace adapter. A strict `config.json` names repositories and
+binds graph reads and human reviews independently. The browser loads a separate
+public configuration and includes HTTP, static JSON graph, and memory graph
+adapters. Review state, audit, and feedback receipts share one conditional
+document write and one domain implementation. Document storage supports graph
+registration, review initialization, proposal rounds, and explicit session
+import; final artifact export remains a local-session operation. No live project
+data was migrated during this release. S3 verification uses controlled SDK
+clients, and no successful visual/browser validation is claimed.
 
 ## Contents
 
@@ -44,7 +56,7 @@ this change adds neither a background model nor generic remote graph authoring.
 Read this document, then:
 
 1. [Behavior Graph Builder instructions](skills/behavior-knowledge-graph-builder/SKILL.md).
-2. Its [graph authoring guide](skills/behavior-knowledge-graph-builder/references/graph-authoring.md), [runtime contract](skills/behavior-knowledge-graph-builder/references/runtime-contract.md), [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md), and [chat review guide](skills/behavior-knowledge-graph-builder/references/chat-review.md).
+2. Its [graph authoring guide](skills/behavior-knowledge-graph-builder/references/graph-authoring.md), [runtime contract](skills/behavior-knowledge-graph-builder/references/runtime-contract.md), [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md), [repository configuration guide](skills/behavior-knowledge-graph-builder/references/repository-config.md), and [chat review guide](skills/behavior-knowledge-graph-builder/references/chat-review.md).
 3. [Requirement Refinement instructions](skills/requirement-refinement/SKILL.md).
 4. Its [impact relationships](skills/requirement-refinement/references/impact-relationships.md), [edge-case taxonomy](skills/requirement-refinement/references/edge-case-taxonomy.md), and [report contract](skills/requirement-refinement/references/output-schema.md).
 5. The relevant implementation files in [section 7](#7-runtime-and-source-map).
@@ -88,6 +100,11 @@ The feedback follow-up requires the skill to know where the app saves reviews,
 pick up new work, and mark it processed after handling it. The implementation uses
 a shared connection descriptor and per-feedback-revision receipts so storage can
 change without losing that workflow or consuming a newer human edit accidentally.
+
+The repository/configuration follow-up asks for actual storage implementations,
+selected through a configuration file rather than a source-code edit. Graphs and
+reviews must be independently placeable, while the viewer and a resumed agent
+continue to use the same selected repositories and review semantics.
 
 ## 3. Research and prior discussion
 
@@ -148,7 +165,14 @@ This table records choices expressed by the user or embodied in the current inst
 | Keep browser and chat review in one session | A modality change should not lose feedback, create contradictory copies, or bypass approval. |
 | Require approval of the exact settled proposal | Reviewing an older graph does not authorize a changed graph. One successful round is sufficient. |
 | Develop the review app separately and ship its built distribution | Normal skill use launches known, reviewed assets without creating an app or invoking frontend build tooling. The manifest and build check detect missing, corrupted, or stale distribution files. |
-| Inject separate graph and human-review repositories | The UI can read graphs and save review data without knowing storage paths or database drivers. HTTP and local SQLite are bundled adapters; storage-specific credentials stay behind the API. |
+| Inject separate graph and human-review repositories | The UI can read graphs and save review data without knowing storage paths or database drivers. Filesystem, SQLite, S3, HTTP, and legacy session implementations now ship; storage-specific credentials stay behind the API. |
+| Select named repositories through configuration | Independent `graphs` and `reviews` bindings support combinations such as S3 graphs and SQLite reviews without editing the app. Unknown fields, unsupported types, missing names, and incompatible capabilities fail explicitly. |
+| Separate server storage configuration from public browser configuration | Server schema `behavior-review-config/1` can contain paths and credential-provider references. The browser receives only `behavior-review-client-config/1`; its HTTP/JSON/memory choices never receive the private server definitions. |
+| Reuse one review domain across storage backends | `ReviewActions` owns annotation, proposal, approval, and feedback rules for legacy sessions and document-backed reviews. New persistence drivers must not fork those rules or replace review state without applying them. |
+| Commit review state, audit, and receipts in one compare-and-swap document | Filesystem, SQLite, and S3 have different transaction facilities. One `state` plus `audit` document prevents a successful state change from losing its audit or processing receipt, and rejects stale writes without partially saving them. Graph publication remains a separate immutable operation. |
+| Hash opaque graph identities and revisions into document keys | A slash or Unicode character remains part of the identity, without becoming a filesystem traversal or object-prefix rule. Static JSON readers and server stores share the exact SHA-256/UTF-8 layout. |
+| Keep legacy session bindings together | A `session` review binding must use the same named repository as the graph binding because legacy proposal authoring writes its session's own graph source. Use document-backed review storage for independent bindings. |
+| Make provisioning and migration explicit | Ordinary reads do not create repositories. `register-graph`, `init-review`, and `import-session` perform deliberate writes; choosing a new configuration does not silently move an existing user's data. |
 | Use explicit immutable revision references and conditional review writes | Separate storage systems cannot share an assumed transaction. Review and history reads name their exact graph revision; stale writes fail rather than overwriting concurrent feedback or approving different content. |
 | Persist one repository connection for app and agent | A later turn can find the same review adapter without guessing a SQLite path or depending on a remembered server process. Graph selection stays explicit. |
 | Track processed feedback separately from discussion status and approval | Reading and responding to a question may still leave a human decision open. Processing receipts do not resolve notes or change an otherwise valid approval. |
@@ -200,7 +224,14 @@ The [taxonomy](skills/requirement-refinement/references/edge-case-taxonomy.md) a
 
 ### Behavior Graph Builder
 
-The agent initializes a separate review directory, retains its `connection.json`, and starts the packaged server before lengthy investigation. The server serves the released `assets/review-app/dist/`; the skill never generates a frontend, installs Node packages, or builds the app during use. The agent authors a proposal from available evidence, validates it, and submits it to the session. The runtime does not extract the graph from code.
+In the default local workflow, the agent initializes a separate review directory,
+retains its `connection.json`, and starts the packaged server before lengthy
+investigation. Configured stores can instead reuse an initialized graph/review or
+be provisioned explicitly through the document authoring commands below. The
+server serves the released `assets/review-app/dist/`; the skill never generates a
+frontend, installs Node packages, or builds the app during use. The agent authors
+a proposal from available evidence, validates it, and submits it to the selected
+review. The runtime does not extract the graph from code.
 
 The review cycle is:
 
@@ -210,7 +241,7 @@ The review cycle is:
 4. Give each note a visible disposition: `addressed`, `accepted_gap`, or `rejected`, with a reason. Acceptance of a gap requires actual user agreement.
 5. If graph content changed, submit a new round. After saving the outcome, acknowledge only each exact handled feedback revision. Refresh the inbox because changed targets can reopen notes. If only explanations were needed, use `complete-review` to clear the request once all notes are dispositioned, without inventing another graph round.
 6. Leave an unresolved human question open even when its processing outcome is `needs_clarification`; obtain actual user approval only after the complete current proposal, including its listed limitations, is settled.
-7. Export through the guarded command and verify the output.
+7. For a local session, export through the guarded command and verify the output. Configured document reviews do not yet have a generic final-artifact exporter; retain the settled review and report that capability boundary rather than bypassing export gates.
 
 A new proposal retains annotations and snapshots. It reopens resolved notes whose directly referenced target changed or disappeared; graph-level notes reopen when graph content changes. An identical proposal does not reopen them. New proposals and semantic feedback changes invalidate earlier approval.
 
@@ -225,11 +256,12 @@ Approval requires no open notes and no pending review request. It records the ro
 ### Live feedback and chat continuation
 
 The viewer uses injected `GraphRepository` and `HumanReviewRepository` ports. Its
-default HTTP adapters use the packaged API; local server adapters save to the
-same SQLite sessions used by the CLI. The viewer does not invoke an LLM. The
+default HTTP adapters use the packaged API; server configuration selects the
+authoritative graph and review stores. The default session adapter saves to the
+same SQLite session used by the CLI. The viewer does not invoke an LLM. The
 graph selector lists initialized sessions when launched with `serve --workspace`;
-`serve --session` remains a catalog of one. A configured repository factory can
-replace graph reads and review writes independently.
+`serve --session` remains a catalog of one. `serve --config PATH` uses named
+repository bindings, while trusted factories remain an extension mechanism.
 
 Review responses exclude graph content and reference a graph ID and immutable
 revision. Every historical round also carries its own `graph_revision`; numeric
@@ -237,11 +269,71 @@ round labels are never assumed to be storage revisions. The app reads the review
 and then its exact referenced graph, rejects mismatches, and ignores late responses
 after graph/round switching. Drafts and layout are scoped by graph identity.
 
-The default local adapter retains the established workflow implementation in
-`Store`. A custom human-review adapter must implement the same conditional-write,
-audit, and approval semantics; the abstraction is a protocol, not a distributed
-transaction coordinator. Remote proposal authoring/export is not implemented by
-the local session CLI. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
+Legacy `Store` and `DocumentReviewSession` now share `ReviewActions`. Custom
+human-review adapters must implement the same conditional-write, audit, and
+approval semantics; the abstraction is a protocol, not a distributed transaction
+coordinator. A document proposal can publish a new immutable snapshot before its
+final review compare-and-swap loses a race. In that case the catalog may advance,
+but the unchanged review still points to its previous revision; inspect current
+feedback before retrying. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
+
+### Configured repositories and document authoring
+
+Server schema `behavior-review-config/1` contains `repositories`, independent
+`bindings.graphs` and `bindings.reviews`, and optional `graph_id` and `client`.
+Relative filesystem/database/session paths resolve against that file. Built-in
+types are `filesystem`, `sqlite`, `s3`, `http`, and `session`; a legacy session
+review must share the same named repository with graph reads. A trusted factory
+remains available for integrations outside these built-in types.
+
+The [configuration reference](skills/behavior-knowledge-graph-builder/references/repository-config.md)
+and [example configurations](skills/behavior-knowledge-graph-builder/assets/repository-configs)
+are the detailed contract. Useful starting points are
+[filesystem graphs with SQLite reviews](skills/behavior-knowledge-graph-builder/assets/repository-configs/filesystem-sqlite.json),
+[filesystem only](skills/behavior-knowledge-graph-builder/assets/repository-configs/filesystem.json),
+[S3 graphs with SQLite reviews](skills/behavior-knowledge-graph-builder/assets/repository-configs/s3-sqlite.json),
+[HTTP API](skills/behavior-knowledge-graph-builder/assets/repository-configs/http.json),
+[legacy session](skills/behavior-knowledge-graph-builder/assets/repository-configs/session.json),
+and [public JSON graph reads with HTTP reviews](skills/behavior-knowledge-graph-builder/assets/repository-configs/browser-json-http.json).
+
+For document-backed storage, `register-graph --config PATH --graph PATH
+--graph-id ID --revision REVISION` validates and publishes a graph,
+`init-review --config PATH --graph-id ID` creates its review, and
+`import-session --config PATH --session PATH` copies an existing local session's
+history explicitly. Configured document sessions can apply subsequent proposal
+rounds and the shared chat/review actions through their supported CLI/domain
+capabilities. A compatible HTTP service provides graph/review/feedback transport;
+its remote proposal-authoring API is a separate integration. Final graph artifact
+export is still the guarded local-session workflow.
+
+Document stores share `catalog.json` (`behavior-graph-catalog/1`), immutable
+`graphs/<sha256 UTF8 graph ID>/<sha256 UTF8 revision>.json` snapshots, and
+`reviews/<sha256 UTF8 graph ID>.json` (`behavior-human-review-document/1`). A review
+document stores `state` and `audit` together; it references graph content by exact
+identity/revision/digest rather than embedding an independently editable graph.
+The storage port provides `read`, create-if-absent, and compare-and-swap using the
+opaque version token returned by the same read. No failed conditional write may
+partially save annotations, audit events, or processing metadata.
+
+`boto3` is optional and loaded when S3 is selected. Credentials come from the
+SDK's provider chain, with configurable bucket/prefix/region/profile/endpoint.
+The object service must enforce conditional creates and replacements; the driver
+does not downgrade to an unconditional overwrite if those operations are
+unsupported. The HTTP adapter obtains optional private authentication from a
+named environment variable, not from browser configuration.
+
+The frontend loads `./config.json` before mounting. The server serves a sanitized
+`behavior-review-client-config/1` projection at that route, using one same-origin
+HTTP repository by default or the explicitly configured `client` object. Public
+adapters are HTTP (graphs and reviews), JSON documents (graphs), and memory
+snapshots (graphs). Memory catalogs explicitly choose the latest revision and
+return detached copies. JSON catalogs refresh for latest reads; pinned history
+uses the immutable key directly. Unknown or invalid configuration shows a startup
+error instead of selecting a fallback store. Deployment configuration remains
+outside the installed dist: the stable bundled `config.json` is authenticated by
+the build manifest, while the server projects configuration without editing it.
+
+### Agent waiting and review readiness
 
 While the host keeps the agent active, `wait --after-version N --timeout 20` returns when review state changes or the timeout expires. The supported timeout is 0–30 seconds; zero provides a nonblocking presence pulse. Presence expires after 35 seconds and does not increment `state_version` or alter approval. `disconnect` clears it. The skill pauses after three idle waits instead of polling indefinitely.
 
@@ -260,8 +352,9 @@ If a usable viewer cannot be reached, continue in chat and explain the limitatio
 `scripts/graph_connection.py` loads a versioned `behavior-review-connection/1`
 descriptor shared by server and agent. `init` creates a session's `connection.json`;
 `serve --session` creates or reuses the same default for existing local sessions.
-`connect` records a local session, a workspace catalog, or an already implemented
-trusted factory/configuration pair. Paths resolve against the descriptor's
+`connect` records a local session, a workspace catalog, configured repositories
+through `--config PATH`, or an already implemented trusted factory/configuration
+pair. Paths resolve against the descriptor's
 directory, not the command's working directory. Retain the descriptor path and
 selected graph ID in the review handoff; credentials stay in the adapter's own
 secret configuration.
@@ -270,13 +363,18 @@ The agent can list the catalog with `feedback-graphs`, load the review and its
 exact graph with `feedback-status`, and inspect `pending-feedback`. A per-graph
 operation uses the descriptor's `graph_id` or explicit `--graph-id`; it never
 silently selects the catalog's first entry. Commands load the adapter directly,
-so a running viewer is not required to recover feedback.
+so a running viewer is not required to recover feedback. These commands also
+accept `--config PATH` directly; a saved connection preserves its configuration
+reference for later turns.
 
 The optional Python `FeedbackProcessingRepository` protocol adds
 `list_pending_feedback(graph_id)` and `mark_feedback_processed(...)` to a review
 adapter. Existing adapters can continue serving the app without it; unsupported
-processing operations must fail clearly. No browser processing-write endpoint
-or third frontend repository is required.
+processing operations must fail clearly. The packaged API now exposes
+`GET /api/graphs/{id}/pending-feedback` and
+`POST /api/graphs/{id}/mark-processed`, and the HTTP adapters forward those
+operations. They are optional methods on the review repository, not a third
+storage repository. The human UI does not automatically mark feedback processed.
 
 Annotation processing fields are `feedback_revision`, `processed_revision`, a
 derived `processing_status`, and the latest `processing_receipt`. The receipt
@@ -314,15 +412,17 @@ Use one active consumer. Recovery is at-least-once: a crash after saving work bu
 before acknowledging it leaves pending feedback. Inspect existing outcomes,
 resolutions, receipts, and proposal history before repeating the work. There is
 no worker lease, multi-consumer coordination, or exactly-once guarantee. The
-descriptor and inbox do not add remote proposal authoring/export; if an available
-integration cannot persist the required change, leave that work pending and
-report the capability gap.
+descriptor and inbox identify the selected store, not its authoring capabilities.
+Document stores support the authoring workflow described above, while a remote
+HTTP service needs a compatible authoring integration. If the selected adapter
+cannot persist the required change, leave that work pending and report the
+capability gap. Never acknowledge work merely because an inbox read succeeded.
 
 ## 6. Graph semantics and integration contract
 
 ### Behavior graph
 
-The authoritative format is documented in the [runtime contract](skills/behavior-knowledge-graph-builder/references/runtime-contract.md) and enforced by `validate_graph` in [graph_model.py](skills/behavior-knowledge-graph-builder/scripts/graph_model.py).
+The authoritative format is documented in the [runtime contract](skills/behavior-knowledge-graph-builder/references/runtime-contract.md) and enforced by `validate_graph` in [graph_contract.py](skills/behavior-knowledge-graph-builder/scripts/graph_contract.py), re-exported by [graph_model.py](skills/behavior-knowledge-graph-builder/scripts/graph_model.py) for compatibility.
 
 The schema version is `behavior-graph/1`. Its root records contain `project`, `nodes`, `dependencies`, `evidence`, and `coverage`.
 
@@ -410,7 +510,12 @@ substantive changes return to the judge rather than bypassing the review.
 | `review.json` | Approval, annotations, round metadata, source metadata, and audit events |
 | `manifest.json` | Artifact hashes and graph identity |
 
-Complete past graph snapshots remain in the review SQLite database. The export does not reproduce each past round as a separate full graph file. Keep the session when later review or historical comparison is needed.
+This final-artifact export is the local-session workflow. Its complete past graph
+snapshots remain in the session's SQLite database; the export does not reproduce
+each past round as a separate full graph file. Keep the session when later review
+or historical comparison is needed. Configured document stores retain immutable
+snapshots and review history in their own storage, but do not yet implement this
+generic final-artifact export.
 
 ## 7. Runtime and source map
 
@@ -420,13 +525,28 @@ Complete past graph snapshots remain in the review SQLite database. The export d
 | [graph-authoring.md](skills/behavior-knowledge-graph-builder/references/graph-authoring.md) | Behavioral modeling, evidence, scope, and downstream use |
 | [runtime-contract.md](skills/behavior-knowledge-graph-builder/references/runtime-contract.md) | Graph, state, API, CLI, and export contracts |
 | [chat-review.md](skills/behavior-knowledge-graph-builder/references/chat-review.md) | Same-session review through chat |
-| [graph_model.py](skills/behavior-knowledge-graph-builder/scripts/graph_model.py) | Validation, canonical hashes, SQLite state/audit, concurrency, approval, export |
-| [graph_review.py](skills/behavior-knowledge-graph-builder/scripts/graph_review.py) | Local authoring CLI, adapter-based feedback commands, and HTTP routes |
+| [graph_contract.py](skills/behavior-knowledge-graph-builder/scripts/graph_contract.py) | Persistence-independent graph/schema validation, canonical hashes, and feedback metadata primitives |
+| [review_actions.py](skills/behavior-knowledge-graph-builder/scripts/review_actions.py) | Shared proposal, annotation, feedback, review-request, and approval transitions |
+| [graph_model.py](skills/behavior-knowledge-graph-builder/scripts/graph_model.py) | Legacy SQLite state/audit, concurrency, presence, export, and compatibility re-exports |
+| [graph_review.py](skills/behavior-knowledge-graph-builder/scripts/graph_review.py) | Local/configured authoring CLI, repository feedback commands, public config/API routes, and packaged assets |
 | [graph_connection.py](skills/behavior-knowledge-graph-builder/scripts/graph_connection.py) | Saved connection schema, path resolution, shared repository loading, and graph selection |
-| [review app source](apps/behavior-graph-review) | Maintained DOM/SVG viewer, injected repository contracts, HTTP adapters, controller, deterministic build, and frontend tests |
+| [repository_config.py](skills/behavior-knowledge-graph-builder/scripts/repository_config.py) | Strict server/public config schemas, named binding factories, relative-path resolution, and safe public projection |
+| [document_repositories.py](skills/behavior-knowledge-graph-builder/scripts/document_repositories.py) | Shared document-store port, catalog/snapshot keys, immutable graph publication, state-plus-audit CAS, document authoring, and session import |
+| [filesystem_repository.py](skills/behavior-knowledge-graph-builder/scripts/filesystem_repository.py) | JSON document persistence, interprocess locks, atomic publication, and conditional replacement |
+| [sqlite_repository.py](skills/behavior-knowledge-graph-builder/scripts/sqlite_repository.py) | Transactional document database and version-token compare-and-swap |
+| [s3_repository.py](skills/behavior-knowledge-graph-builder/scripts/s3_repository.py) | Optional SDK-backed object document storage with conditional create/replace and opaque ETags |
+| [http_repository.py](skills/behavior-knowledge-graph-builder/scripts/http_repository.py) | Compatible upstream graph/review/feedback API client and private environment-token configuration |
+| [review app source](apps/behavior-graph-review) | Maintained DOM/SVG viewer, injected contracts, controller, deterministic build, and frontend tests |
+| [repository-config.js](apps/behavior-graph-review/src/repository-config.js), [repository-urls.js](apps/behavior-graph-review/src/repository-urls.js), and [config.json](apps/behavior-graph-review/src/config.json) | Public browser config validation, independent role bindings, URL resolution, and shipped default |
+| [http-repositories.js](apps/behavior-graph-review/src/http-repositories.js), [json-graph-repository.js](apps/behavior-graph-review/src/json-graph-repository.js), [memory-graph-repository.js](apps/behavior-graph-review/src/memory-graph-repository.js), and [graph-documents.js](apps/behavior-graph-review/src/graph-documents.js) | Browser transport/read adapters and shared graph DTO checks |
 | [packaged review app](skills/behavior-knowledge-graph-builder/assets/review-app/dist) | Built HTML/ES-module/CSS assets and hash manifest shipped with the skill |
 | [graph_repositories.py](skills/behavior-knowledge-graph-builder/scripts/graph_repositories.py) | Graph, human-review, and optional feedback-processing ports, local catalog/adapters, and trusted factory loading |
 | [repository-contract.md](skills/behavior-knowledge-graph-builder/references/repository-contract.md) | Adapter semantics, connection descriptors, revision consistency, CRUD, feedback lifecycle, and processing receipts |
+| [repository-config.md](skills/behavior-knowledge-graph-builder/references/repository-config.md) and [configuration examples](skills/behavior-knowledge-graph-builder/assets/repository-configs) | Server/client schemas, adapter options, capability boundaries, startup, provisioning, and migration |
+| [test_document_repositories.py](tests/test_document_repositories.py) | Filesystem/SQLite persistence, shared review-domain behavior, CAS races, pinned revisions, and import |
+| [test_remote_repositories.py](tests/test_remote_repositories.py) | HTTP protocol fixtures and controlled S3 SDK clients; no live cloud verification |
+| [test_repository_config.py](tests/test_repository_config.py) | Config validation, independent storage bindings, connections, CLI/API integration, and public projection |
+| [frontend config tests](apps/behavior-graph-review/test/repository-config.test.js) and [graph adapter tests](apps/behavior-graph-review/test/graph-adapters.test.js) | Strict browser config, visible failure, exact revision paths, immutable copies, and catalog consistency |
 | [test_graph_repositories.py](tests/test_graph_repositories.py) | Repository, CRUD, HTTP, legacy session, approval, and packaged-asset regressions |
 | [test_feedback_processing.py](tests/test_feedback_processing.py) | Feedback revision lifecycle, concurrency, legacy compatibility, and processing/approval separation |
 | [test_feedback_connection.py](tests/test_feedback_connection.py) | Saved connections, CLI discovery, app-to-agent pickup, custom adapters, and interrupted locator writes |
@@ -442,15 +562,16 @@ Complete past graph snapshots remain in the review SQLite database. The export d
 
 Builder runtime details that matter when modifying it:
 
-- Python 3.10+ and the standard library at runtime. Node 18+ is used only to develop/build the app; there is no runtime frontend build or package install.
-- A separate session directory containing `review.sqlite3` and the shared `connection.json`; do not put mutable reviews inside the installed skill.
-- SQLite WAL, round snapshots, audit records, and optimistic `state_version` checks. Semantic writes use `BEGIN IMMEDIATE`.
-- Server routes expose a graph catalog, immutable graph snapshots, separate review state, annotation CRUD, resolution/reopening, review requests, and approval. Legacy single-session routes remain available. Local CLI operations also author proposals and export.
+- Python 3.10+; local files, SQLite, and HTTP use the standard library. S3 additionally requires an SDK version with conditional `PutObject` support. Node 18+ is used only to develop/build the app; there is no runtime frontend build or package install.
+- The default local workflow uses a separate session directory containing `review.sqlite3` and the shared `connection.json`. Configured storage uses external `config.json` plus its selected stores; do not put mutable reviews or private deployment settings inside the installed skill.
+- Legacy SQLite uses WAL, round snapshots, audit records, and optimistic `state_version` checks; semantic writes use `BEGIN IMMEDIATE`. Document-backed reviews apply the same domain transitions and save state/audit together through a backend version-token CAS.
+- Server routes expose a graph catalog, immutable snapshots, separate review state, annotation CRUD, resolution/reopening, review requests, approval, pending feedback, processing acknowledgments, and sanitized public config. Legacy single-session routes remain available. Configured document authoring is supported; final export remains local-session only.
 - Agent feedback commands share the configured repositories with the app and do not need its HTTP server. Processing receipts use conditional writes and audit but do not change the approved semantic review digest.
 - The frontend polls full state every 3.5 seconds. Its initial layout groups node kinds into three columns; it is not a semantic-clustering or force-directed implementation.
 - Unsaved note drafts live in browser session storage per graph ID; saved notes go through the review repository (SQLite by default). The separate review request signals readiness for the agent. Stale edits return a conflict, preserve text, load current state, and require deliberate retry.
 - Loopback is the default. Host/Origin checks, CSRF protection, JSON-only mutations, and named routes limit access. The server does not serve arbitrary project files.
 - `--allowed-origin` supports an already trusted preview proxy. It is not authentication; user accounts and public hosting are outside the current runtime.
+- Browser endpoints require HTTPS except loopback HTTP. Cross-origin services need suitable CORS; a public client configuration does not confer authentication. CSP endpoint allowances derive only from explicit public client endpoints, not private backend storage definitions.
 - Export stages files and publishes a new directory by rename. It refuses existing destinations. Filesystem publication and the SQLite receipt are separate operations, so crash recovery needs explicit testing.
 
 ### Small local checks
@@ -491,6 +612,11 @@ For a viewer check, initialize a new temporary session and serve it using the co
 | Live packaged-builder invocation, 2026-11-21 | A fresh agent initialized a session, launched the shipped server, and saved a valid first proposal of 20 nodes and 22 relationships from seven unchanged fictional source files. It used chat presentation and ran no frontend generation, package installation, or build. Approval stayed empty and no final export occurred. Separate health requests could not reach the long-running local process in this environment, so no usable preview URL was claimed. |
 | Feedback discovery/processing update, 2026-11-21 | All 68 Python tests and 26 frontend tests passed. This adds 17 lifecycle, 10 connection/CLI/integration, and 5 frontend processing cases. Checks include app HTTP save → CLI pickup/receipt → app read and edit, opaque custom-adapter revisions with SQLite forbidden, interrupted connection writes, pending tombstones, stale acknowledgments, legacy audit recovery, and unchanged approval/export compatibility. Exact distribution checks passed for both copies, and the installed skill validator passed. |
 | Fresh-context feedback resume, 2026-11-21 | An agent resumed a fictional booking review through its saved connection, inspected the policy source and audit, recorded a `needs_clarification` outcome for an open policy question and `withdrawn` for a deleted request. Both exact revisions left the inbox. The human question stayed open, the withdrawal stayed deleted, graph round/digest stayed unchanged, and approval/finalization remained empty. No browser or server was needed. This was a workflow check, not a benchmark or real project approval. |
+| Repository configuration frontend, 2026-11-21 | All 44 frontend tests passed, and syntax checks passed for source/build/test JavaScript. New checks cover independent bindings, URL prefixes, strict errors without fallback, visible failed startup, JSON snapshot keys and history, detached memory snapshots, feedback HTTP forwarding, and the stable config asset's manifest integrity. No visual validation was performed. |
+| Repository configuration backend/release, 2026-11-21 | All 118 Python tests and 44 frontend tests passed. The distribution was rebuilt and exact manifest/source checks passed for both repository and installed skill copies; the installed skill validator passed. New suites cover 17 document/storage cases, 17 remote adapter cases, and 16 configuration/CLI/API cases, including source-selection boundaries, independently chosen storage, stale proposals and writes, pinned revisions, and credential separation. S3 uses a controlled protocol client; no live bucket or browser visual check was performed. |
+| Fresh configured-review continuation, 2026-11-21 | A fresh agent used the installed skill and a supplied config binding filesystem graphs to SQLite reviews, with an opaque revision. It resumed one submitted fictional question, inspected the policy, saved a needs_clarification receipt for the exact revision, and retained the open discussion and review request. Root reads verified the empty processing inbox, unchanged graph revision/digest, null approval/finalization, and saved connection/handoff. It also reported a graph/scope mismatch rather than inventing coverage. No viewer, duplicate session, cloud write, or final export occurred. |
+| S3 verification boundary | Tests use controlled SDK clients for object-key layout, ETags, conditional requests, service errors, and unsupported preconditions. No live S3 bucket or provider credentials were used; SDK/service compatibility remains a deployment integration check. |
+| Data migration boundary | This release changes code, examples, and packaged assets. No live user graph/review data was migrated; session import and other storage writes were exercised only against isolated fixtures. |
 | Not established | Complete builder state-machine/export coverage or CI; a successful live browser walkthrough; benchmark precision/recall or exhaustive edge-case coverage; automatic graph-to-report interoperability |
 
 The historical builder checks and booking trial were development exercises. Their
@@ -518,7 +644,10 @@ The original browser walkthrough was blocked by the available environment's reac
 - **External boundaries remain uncertain.** A producer's code cannot establish an inaccessible consumer's behavior.
 - **No autonomous background model is bundled.** Presence only indicates an active agent wait. Server availability follows the host process and environment lifetime.
 - **Feedback processing uses one active consumer.** Conditional acknowledgments prevent stale receipts, but do not claim exclusive work or prevent duplicate reasoning. Recovery may repeat work saved before an interrupted acknowledgment.
-- **Feedback transport is not remote graph authoring.** Saved connections and inbox operations can use a custom adapter; remote proposals and exports still require an explicit integration with the same approval guarantees.
+- **Authoring and final export have different coverage.** Document repositories support registration, initialization, proposal rounds, and session import through the shared domain. Remote HTTP authoring needs an explicit integration; generic final artifact export for configured stores is not implemented.
+- **Built-in S3 support is not a live-provider certification.** `boto3` is optional, and the selected service must enforce create-if-absent and exact-version replacement. Controlled-client tests do not establish credentials, IAM policy, SDK version, provider-specific compatibility, or deployment availability.
+- **Storage operations do not form one distributed transaction.** A failed review CAS can leave a newly published immutable graph or advanced catalog without changing the review's pinned revision. Review state/audit/receipts remain atomic together, and retry must inspect current feedback rather than assume the proposal took effect.
+- **Legacy session storage is not independently bindable for review writes.** Session review and graph bindings must name the same entry; independent storage composition requires the document-backed review domain or a compatible custom/API integration.
 
 ## 9. Suggested next work
 
@@ -544,7 +673,7 @@ Evaluate missed consequential cases, unsupported findings, correct classificatio
 
 7. Measure graph size, review latency, and context cost before introducing subgraph APIs, incremental extraction, semantic search, or richer graph diff views.
 8. Evaluate clustering or semantic-plus-structural retrieval against the current focused-search baseline. Domain grouping is not DBSCAN, and a promising research result does not establish the right parameters for this application.
-9. Consider additional evidence adapters, code indexes, or graph storage only when they improve a measured workflow. Human approval, provenance, and visible uncertainty still need to survive the integration.
+9. Validate the included S3/HTTP adapters against an explicitly authorized deployment before adding more storage drivers. Add generic configured-store final export or HTTP authoring only with the same approval, provenance, conditional-write, and recovery guarantees. Consider additional evidence adapters or code indexes when they improve a measured workflow.
 
 For any schema or state-machine change, update the validator, contract, agent instructions, example data, frontend/export consumers, and regression checks together. Do not add fields that downstream strict validators silently cannot accept.
 

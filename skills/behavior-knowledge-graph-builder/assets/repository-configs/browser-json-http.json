@@ -1,0 +1,8 @@
+{
+  "schema_version": "behavior-review-client-config/1",
+  "repositories": {
+    "publishedGraphs": {"type": "json", "url": "https://graphs.example.com/project-a/catalog.json"},
+    "reviewApi": {"type": "http", "base_url": ""}
+  },
+  "bindings": {"graphs": "publishedGraphs", "reviews": "reviewApi"}
+}

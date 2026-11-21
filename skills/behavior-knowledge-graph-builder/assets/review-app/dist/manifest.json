@@ -1,14 +1,20 @@
 {
   "schema_version": "behavior-review-app-dist/1",
   "entry": "index.html",
-  "source_digest": "4305bc72f1ba4f72febe26ff5f20f7bdf6c603dbbec05c73db2eea97bc6fb0d7",
+  "source_digest": "8b55c65da59bf8a7cb6dd19bd66ed481eb8ce597536f41301013b7c4fe17e557",
   "files": {
     "app.f4613fade31578b1.js": "f4613fade31578b13d8c35be42b97e86f6bbcd1d301fd5722b4781a7f9edb56f",
+    "config.json": "d13019215bdb8371825fc00fd85eb48a2299fcd2db99ea7f3f5a27858e17974f",
     "controller.4a3c556f82e38ce0.js": "4a3c556f82e38ce0867cc41caf0fd0f9233739fee6235c8f6f15ebb062df9bb1",
     "feedback.a1f74aa131af90b6.js": "a1f74aa131af90b6005afef1dbd91e1c613ed122d768320b79c2a5aacc6634ea",
-    "http-repositories.cab1792492ee2c64.js": "cab1792492ee2c64cfc3a531632fcff69fd28f96e8cf169676dae08be4431821",
-    "index.html": "9f0ce335b9495ab29cde1a7fe5c04fd48aa98c245a0d1922b4bb1e681325d5ec",
-    "main.bf7e50eb73446156.js": "bf7e50eb734461563a1dcc6f21ea336359c0fbcdfe349a52887df7fab7833f2b",
+    "graph-documents.41133a2b415dffee.js": "41133a2b415dffeee9f10bd116a878eb45e23882a4d8656ec0202f48bbfa39f5",
+    "http-repositories.e5d784d0458d4dfd.js": "e5d784d0458d4dfdcd234d1b3bc9141ccd8cdf8e793897b60f11f13243090838",
+    "index.html": "b88f323d87265d152ea4de114af37b6dcd617be4290e51e52cbb0363efc084c6",
+    "json-graph-repository.2500d765b1f5e745.js": "2500d765b1f5e745eaa6e0c9a9ad0c05699ce07dd1f9baaf16cf192841d94065",
+    "main.7b330465596cde3a.js": "7b330465596cde3a40bdd663beeb3cf98f7917171f88890ffb4fc5d9900510f1",
+    "memory-graph-repository.fe950b476722fea9.js": "fe950b476722fea91934c0d80e7da8ed800a02c57c510bb20eae8261cb04bdbb",
+    "repository-config.e8161b832d84c9a6.js": "e8161b832d84c9a6c6e84faa775846a808c3c949745d7077b4f012cd6460eb1b",
+    "repository-urls.1b1e92b4e9240ca8.js": "1b1e92b4e9240ca83e14c9c7fee3a6b98a59b06cb7b7c2f921cbeef3f35c04b9",
     "styles.cb655adc585672cb.css": "cb655adc585672cba1e21f91e3401dfe460c5fd7bac1e75e9b7f62bea210d6ea"
   }
 }

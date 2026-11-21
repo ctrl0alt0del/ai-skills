@@ -1,0 +1,9 @@
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "graphFiles": {"type": "filesystem", "path": "./data/graphs"},
+    "humanReviews": {"type": "sqlite", "path": "./data/reviews.sqlite3"}
+  },
+  "bindings": {"graphs": "graphFiles", "reviews": "humanReviews"},
+  "graph_id": "application-behavior"
+}

@@ -76,8 +76,9 @@ class Repositories:
 def review_dto(state):
     """Separate graph data from human review state; keep legacy review fields."""
     return {**{key: value for key, value in state.items() if key != "graph"},
-            "graph_id": state["session_id"], "graph_revision": str(state["round"]),
-            "rounds": [{**item, "graph_revision": str(item["round"])}
+            "graph_id": state.get("graph_id", state["session_id"]),
+            "graph_revision": state.get("graph_revision", str(state["round"])),
+            "rounds": [{**item, "graph_revision": item.get("graph_revision", str(item["round"]))}
                        for item in state["rounds"]]}
 
 
@@ -155,6 +156,11 @@ class SQLiteHumanReviewRepository:
 
     def __init__(self, catalog):
         self.catalog = catalog
+
+    def session(self, graph_id):
+        """Trusted agent/chat actions for an explicitly selected local session."""
+        store, _ = self.catalog.find(graph_id)
+        return store
 
     def get_review(self, graph_id):
         _, state = self.catalog.find(graph_id)

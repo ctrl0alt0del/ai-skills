@@ -4,6 +4,7 @@ export interface GraphSummary {
   title: string;
   revision: string;
   digest: string | null;
+  node_count?: number;
 }
 export interface BehaviorGraph {
   schema_version: string;
@@ -107,3 +108,37 @@ export interface FeedbackProcessingRepository {
     outcome: FeedbackOutcome, summary: string, processor: string, expectedVersion: number): Promise<ReviewSnapshot>;
 }
 export interface Repositories { graphRepository: GraphRepository; reviewRepository: HumanReviewRepository }
+
+export interface GraphCatalog {
+  schema_version: 'behavior-graph-catalog/1';
+  /** One explicit latest revision for each graph; historical snapshots remain readable. */
+  graphs: GraphSummary[];
+}
+export interface HttpRepositoryConfig {
+  type: 'http';
+  /** Service prefix, relative to config.json or HTTPS (HTTP on loopback); /api is appended. */
+  base_url?: string;
+}
+export interface JsonGraphRepositoryConfig {
+  type: 'json';
+  /** Catalog URL, relative to config.json or HTTPS (HTTP on loopback); no query or fragment. */
+  url: string;
+}
+export interface MemoryGraphRepositoryConfig {
+  type: 'memory';
+  catalog: GraphCatalog;
+  /** Immutable snapshots including every latest revision named in the catalog. */
+  snapshots: GraphSnapshot[];
+}
+export type ClientRepositoryConfig = HttpRepositoryConfig | JsonGraphRepositoryConfig | MemoryGraphRepositoryConfig;
+export interface ClientRepositoryConfiguration {
+  schema_version: 'behavior-review-client-config/1';
+  repositories: Record<string, ClientRepositoryConfig>;
+  /** Both values refer to named entries; reviews must select an HTTP adapter. */
+  bindings: { graphs: string; reviews: string };
+}
+export interface ClientRepositoryDependencies {
+  configUrl: string | URL;
+  fetchImpl?: typeof fetch;
+  cryptoImpl?: Crypto;
+}

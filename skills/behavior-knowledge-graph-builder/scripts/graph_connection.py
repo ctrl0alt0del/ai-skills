@@ -29,6 +29,8 @@ class ReviewConnection:
     repositories: Repositories
     graph_id: str | None
     kind: str
+    client_config: dict | None = None
+    config_path: Path | None = None
 
     def select_graph(self, override=None):
         identifier = override if override is not None else self.graph_id
@@ -71,6 +73,8 @@ def _load_value(value, path):
     if not isinstance(repository, dict):
         raise ReviewError("Review connection repository must be an object.")
     kind = repository.get("kind")
+    client_config = None
+    config_path = None
     if kind in {"session", "workspace"}:
         _keys(repository, ("kind", "path"))
         location = _relative_path(repository["path"], path.parent, "repository path")
@@ -81,9 +85,17 @@ def _load_value(value, path):
         config = (_relative_path(repository["config"], path.parent, "repository config")
                   if "config" in repository else None)
         repositories = load_repositories(factory, config)
+    elif kind == "config":
+        from repository_config import load_repository_config
+        _keys(repository, ("kind", "path"))
+        configured = load_repository_config(_relative_path(repository["path"], path.parent, "repository config"))
+        repositories = configured.repositories
+        client_config, config_path = configured.client_config, configured.path
+        if graph_id is None:
+            graph_id = configured.graph_id
     else:
-        raise ReviewError("Review connection repository kind must be session, workspace, or factory.")
-    return ReviewConnection(path, repositories, graph_id, kind)
+        raise ReviewError("Review connection repository kind must be session, workspace, factory, or config.")
+    return ReviewConnection(path, repositories, graph_id, kind, client_config, config_path)
 
 
 def read_connection(path):
@@ -102,10 +114,18 @@ def session_connection(session):
     return ReviewConnection(None, repositories, identifier, "session")
 
 
-def write_connection(path, *, session=None, workspace=None, factory=None, config=None, graph_id=None):
+def config_connection(path):
+    from repository_config import load_repository_config
+    configured = load_repository_config(path)
+    return ReviewConnection(None, configured.repositories, configured.graph_id, "config",
+                            configured.client_config, configured.path)
+
+
+def write_connection(path, *, session=None, workspace=None, factory=None, config=None,
+                     graph_id=None, repository_config_path=None):
     """Create or reuse an identical locator; never overwrite another connection."""
-    if sum(item is not None for item in (session, workspace, factory)) != 1:
-        raise ReviewError("Choose exactly one session, workspace, or repository factory.")
+    if sum(item is not None for item in (session, workspace, factory, repository_config_path)) != 1:
+        raise ReviewError("Choose exactly one session, workspace, repository factory, or config.json.")
     if config is not None and factory is None:
         raise ReviewError("--repository-config requires --repository-factory.")
     path = Path(path).expanduser().absolute()
@@ -124,6 +144,8 @@ def write_connection(path, *, session=None, workspace=None, factory=None, config
             graph_id = session_connection(session).graph_id
     elif workspace is not None:
         repository = {"kind": "workspace", "path": stored_path(workspace)}
+    elif repository_config_path is not None:
+        repository = {"kind": "config", "path": stored_path(repository_config_path)}
     else:
         resolved = _factory_reference(factory, Path.cwd())
         module, name = resolved.rsplit(":", 1)
@@ -136,8 +158,8 @@ def write_connection(path, *, session=None, workspace=None, factory=None, config
     if graph_id is not None:
         value["graph_id"] = _graph_id(graph_id)
     connection = _load_value(value, path)
-    if graph_id is not None:
-        if not any(item.get("id") == graph_id for item in connection.repositories.graphs.list_graphs()):
+    if connection.graph_id is not None:
+        if not any(item.get("id") == connection.graph_id for item in connection.repositories.graphs.list_graphs()):
             raise ReviewError("Selected graph is not in this repository's catalog.", 404)
     path.parent.mkdir(parents=True, exist_ok=True)
     def check_existing():

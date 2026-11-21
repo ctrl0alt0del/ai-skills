@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local, persistent behavior-graph review. Python 3.10+; no third-party packages."""
+"""Configurable behavior-graph review. Python 3.10+; optional boto3 for S3."""
 
 import argparse
 import hashlib
@@ -19,7 +19,8 @@ sys.dont_write_bytecode = True
 
 from graph_model import KINDS, DISPOSITIONS, TARGET_TYPES, PROCESSING_OUTCOMES, Store, ReviewError, parse_json, read_graph
 from graph_repositories import check_repositories, check_feedback_repository, local_repositories, load_repositories
-from graph_connection import read_connection, session_connection, write_connection
+from graph_connection import read_connection, session_connection, config_connection, write_connection
+from repository_config import DEFAULT_CLIENT_CONFIG, validate_client_config, client_connect_origins, load_repository_config, read_config
 
 
 MAX_REQUEST_BYTES = 128 * 1024
@@ -86,7 +87,7 @@ def load_dist(directory):
     return assets
 
 
-def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dist=None):
+def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dist=None, client_config=None):
     """Serve the prebuilt app over injected repositories, or a legacy Store."""
     legacy_store = repositories if isinstance(repositories, Store) else None
     legacy_id = legacy_store.state()["session_id"] if legacy_store is not None else None
@@ -106,6 +107,8 @@ def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dis
     graphs.list_graphs()  # Fail before binding if configured storage is unavailable.
     token = legacy_store.token() if legacy_store is not None else secrets.token_urlsafe(32)
     assets = load_dist(DIST if dist is None else dist)
+    public_config = validate_client_config(DEFAULT_CLIENT_CONFIG if client_config is None else client_config)
+    connect_sources = " ".join(["'self'", *client_connect_origins(public_config)])
     origins = set()
     hosts = set()
 
@@ -130,7 +133,7 @@ def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dis
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src " + connect_sources + "; object-src 'none'; base-uri 'none'")
             self.end_headers()
             if self.command != "HEAD":
                 try:
@@ -177,7 +180,9 @@ def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dis
         def route_get(self):
             self.check_origin()
             parsed, parts, query = self.parsed_route()
-            if parsed.path in assets:
+            if parsed.path == "/config.json":
+                self.reply(200, public_config)
+            elif parsed.path in assets:
                 self.reply(200, *assets[parsed.path])
             elif parsed.path == "/api/bootstrap":
                 self.reply(200, {"csrf_token": token})
@@ -200,6 +205,10 @@ def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dis
                     if query:
                         raise ReviewError("Review reads do not accept query parameters.")
                     self.reply(200, self.public_review(reviews.get_review(graph_id)))
+                elif len(parts) == 4 and parts[3] == "pending-feedback":
+                    if query:
+                        raise ReviewError("Pending feedback reads do not accept query parameters.")
+                    self.reply(200, check_feedback_repository(reviews).list_pending_feedback(graph_id))
                 elif len(parts) in {4, 5} and parts[3] == "annotations":
                     if set(query) - {"include_deleted"} or query.get("include_deleted", ["false"]) not in (["true"], ["false"]):
                         raise ReviewError("include_deleted must be one true or false value.")
@@ -288,6 +297,11 @@ def make_server(repositories, host="127.0.0.1", port=0, allowed_origin=None, dis
             elif route == ["approve"]:
                 fields(body, ("expected_version", "acknowledge_limits", "text"))
                 result = reviews.approve_review(graph_id, body["text"], body["acknowledge_limits"], body["expected_version"])
+            elif route == ["mark-processed"]:
+                fields(body, ("expected_version", "annotation_id", "feedback_revision", "outcome", "summary", "processor"))
+                result = check_feedback_repository(reviews).mark_feedback_processed(
+                    graph_id, body["annotation_id"], body["feedback_revision"], body["outcome"],
+                    body["summary"], body["processor"], body["expected_version"])
             else:
                 raise ReviewError("Route not found.", 404)
             self.reply(200, self.legacy_state(result) if legacy else self.public_review(result))
@@ -349,10 +363,17 @@ def build_parser():
         if command == "serve":
             storage = sub.add_mutually_exclusive_group(required=True)
             storage.add_argument("--connection", type=Path, help="Saved repository locator shared with the feedback CLI")
+            storage.add_argument("--config", type=Path, help="config.json with named repositories and graph/review bindings")
             storage.add_argument("--session", type=Path)
             storage.add_argument("--workspace", type=Path, help="Catalog of initialized review-session directories")
             storage.add_argument("--repository-factory", help="Trusted module:callable or /path/plugin.py:callable returning graph/review repositories")
             sub.add_argument("--repository-config", type=Path, help="JSON object passed to the custom repository factory")
+        elif command not in {"init", "wait", "disconnect"}:
+            storage = sub.add_mutually_exclusive_group(required=True)
+            storage.add_argument("--session", type=Path)
+            storage.add_argument("--connection", type=Path)
+            storage.add_argument("--config", type=Path)
+            sub.add_argument("--graph-id", help="Opaque graph ID for the selected configured review")
         else:
             sub.add_argument("--session", required=True, type=Path)
         if command not in {"init", "serve", "status", "wait", "disconnect"}:
@@ -369,6 +390,7 @@ def build_parser():
         elif command == "propose":
             sub.add_argument("--graph", required=True, type=Path)
             sub.add_argument("--summary", required=True)
+            sub.add_argument("--revision", help="Opaque immutable revision for a document repository; generated when omitted")
         elif command == "annotate":
             sub.add_argument("--target-type", required=True, choices=sorted(TARGET_TYPES))
             sub.add_argument("--target-id")
@@ -405,12 +427,14 @@ def build_parser():
     storage.add_argument("--session", type=Path)
     storage.add_argument("--workspace", type=Path)
     storage.add_argument("--repository-factory")
+    storage.add_argument("--config", type=Path, help="Declarative config.json shared by the app and feedback CLI")
     connect.add_argument("--repository-config", type=Path)
     connect.add_argument("--graph-id")
     for command in ("feedback-graphs", "feedback-status", "pending-feedback", "mark-processed"):
         sub = subparsers.add_parser(command)
         storage = sub.add_mutually_exclusive_group(required=True)
         storage.add_argument("--connection", type=Path)
+        storage.add_argument("--config", type=Path)
         storage.add_argument("--session", type=Path, help="Explicit local session convenience")
         if command != "feedback-graphs":
             sub.add_argument("--graph-id", help="Opaque graph ID; defaults to the connection's graph_id")
@@ -424,17 +448,32 @@ def build_parser():
             sub.add_argument("--summary", required=True)
             sub.add_argument("--processor", required=True, help="Truthful agent/run reference, not an authenticated identity")
             sub.add_argument("--expect-version", required=True, type=int)
+    for command in ("config-check", "register-graph", "init-review", "import-session"):
+        sub = subparsers.add_parser(command)
+        sub.add_argument("--config", required=True, type=Path)
+        if command in {"register-graph", "init-review"}:
+            sub.add_argument("--graph-id", help="Opaque graph ID; defaults to graph_id in config.json")
+            sub.add_argument("--revision", required=command == "register-graph")
+            sub.add_argument("--title")
+        if command == "register-graph":
+            sub.add_argument("--graph", required=True, type=Path)
+        elif command == "init-review":
+            sub.add_argument("--summary", default="Initial proposal")
+        elif command == "import-session":
+            sub.add_argument("--session", required=True, type=Path)
     return parser
 
 
 def connection_receipt(connection):
     return {"connection": str(connection.path) if connection.path else None,
+            "config": str(connection.config_path) if connection.config_path else None,
             "repository_kind": connection.kind, "graph_id": connection.graph_id,
             "graphs": connection.repositories.graphs.list_graphs()}
 
 
 def feedback_command(args):
-    connection = read_connection(args.connection) if args.connection else session_connection(args.session)
+    connection = (read_connection(args.connection) if args.connection else
+                  config_connection(args.config) if args.config else session_connection(args.session))
     repositories = connection.repositories
     if args.command == "feedback-graphs":
         return connection_receipt(connection)
@@ -448,6 +487,7 @@ def feedback_command(args):
                 or snapshot.get("digest") != review.get("graph_digest")):
             raise ReviewError("Review and immutable graph snapshot do not match. Refresh before processing feedback.", 409)
         return {"connection": str(connection.path) if connection.path else None,
+                "config": str(connection.config_path) if connection.config_path else None,
                 "graph": snapshot, "review": review}
     feedback = check_feedback_repository(repositories.reviews)
     if args.command == "mark-processed":
@@ -472,10 +512,57 @@ def feedback_command(args):
         remaining = deadline - time.monotonic()
         if args.after_version is None or changed or remaining <= 0:
             result = {**pending, "connection": str(connection.path) if connection.path else None}
+            if connection.config_path is not None:
+                result["config"] = str(connection.config_path)
             if args.after_version is not None:
                 result["changed"] = changed
             return result
         time.sleep(min(0.5, remaining))
+
+
+def provision_command(args):
+    if args.command == "config-check":
+        path, config = read_config(args.config)
+        return {"valid": True, "config": str(path),
+                "bindings": {role: {"repository": name, "type": config["repositories"][name]["type"]}
+                             for role, name in config["bindings"].items()},
+                "notice": "Configuration structure checked. No storage was created or remote connectivity verified."}
+    configured = load_repository_config(args.config)
+    if args.command == "import-session":
+        method = getattr(configured.repositories.reviews, "import_session", None)
+        if not callable(method):
+            raise ReviewError("The selected review repository does not support session import. Use a filesystem, SQLite, or S3 document repository.", 501)
+        return method(Store(args.session))
+    graph_id = args.graph_id if args.graph_id is not None else configured.graph_id
+    if graph_id is None:
+        raise ReviewError("Provide --graph-id or set graph_id in config.json.")
+    if args.command == "register-graph":
+        method = getattr(configured.repositories.graphs, "publish_graph", None)
+        if not callable(method):
+            raise ReviewError("The selected graph repository does not support snapshot registration. Use its existing publishing API or a document repository.", 501)
+        return method(graph_id, args.revision, read_graph(args.graph), title=args.title)
+    method = getattr(configured.repositories.reviews, "initialize_review", None)
+    if not callable(method):
+        raise ReviewError("The selected review repository does not support explicit review initialization. Use its existing provisioning API or a document repository.", 501)
+    return method(graph_id, args.revision, title=args.title, summary=args.summary)
+
+
+def authoring_session(args):
+    if args.session is not None:
+        store = Store(args.session)
+        if args.graph_id is not None and args.graph_id != store.state()["session_id"]:
+            raise ReviewError("Selected graph does not belong to this local session.", 404)
+        return store
+    connection = read_connection(args.connection) if args.connection else config_connection(args.config)
+    method = getattr(connection.repositories.reviews, "session", None)
+    if not callable(method):
+        raise ReviewError("This review repository does not expose trusted agent/chat authoring commands. Use its backend authoring integration; the HTTP review and feedback APIs remain available.", 501)
+    session = method(connection.select_graph(args.graph_id))
+    operation = {"status": "state", "edit-annotation": "edit_annotation", "delete-annotation": "delete_annotation",
+                 "complete-review": "complete_review", "approve-chat": "approve"}.get(args.command, args.command)
+    if not callable(getattr(session, operation, None)):
+        raise ReviewError(f"The selected repository does not support the {args.command} authoring command. Final artifact export currently requires a local session.", 501)
+    return session
 
 
 def main(argv=None):
@@ -488,8 +575,10 @@ def main(argv=None):
         elif args.command == "connect":
             connection = write_connection(args.connection, session=args.session, workspace=args.workspace,
                                           factory=args.repository_factory, config=args.repository_config,
-                                          graph_id=args.graph_id)
+                                          graph_id=args.graph_id, repository_config_path=args.config)
             result = connection_receipt(connection)
+        elif args.command in {"config-check", "register-graph", "init-review", "import-session"}:
+            result = provision_command(args)
         elif args.command in {"feedback-graphs", "feedback-status", "pending-feedback", "mark-processed"}:
             result = feedback_command(args)
         elif args.command == "serve":
@@ -499,6 +588,9 @@ def main(argv=None):
             if args.connection:
                 connection = read_connection(args.connection)
                 repositories = connection.repositories
+            elif args.config:
+                connection = config_connection(args.config)
+                repositories = connection.repositories
             elif args.repository_factory:
                 repositories = load_repositories(args.repository_factory, args.repository_config)
             elif args.workspace:
@@ -506,11 +598,14 @@ def main(argv=None):
             else:
                 repositories = Store(args.session)
                 connection = write_connection(Path(args.session) / "connection.json", session=args.session)
-            server, url = make_server(repositories, args.host, args.port, args.allowed_origin)
+            server, url = make_server(repositories, args.host, args.port, args.allowed_origin,
+                                      client_config=connection.client_config if connection else None)
             info = {"url": url, "mode": "graph review"}
             if connection is not None:
-                info["connection"] = str(connection.path)
+                info["connection"] = str(connection.path) if connection.path is not None else None
                 info["graph_id"] = connection.graph_id
+                if connection.config_path is not None:
+                    info["config"] = str(connection.config_path)
             if isinstance(repositories, Store):
                 info["session_id"] = repositories.state()["session_id"]
             else:
@@ -524,7 +619,8 @@ def main(argv=None):
                 server.server_close()
             return 0
         else:
-            store = Store(args.session)
+            store = (Store(args.session) if args.command in {"init", "wait", "disconnect"}
+                     else authoring_session(args))
             if args.command == "init":
                 result = store.initialize(args.title)
                 connection = write_connection(store.directory / "connection.json", session=store.directory,
@@ -537,7 +633,12 @@ def main(argv=None):
             elif args.command == "disconnect":
                 result = store.disconnect()
             elif args.command == "propose":
-                result = store.propose(read_graph(args.graph), args.summary, args.expect_version)
+                if isinstance(store, Store):
+                    if args.revision is not None:
+                        raise ReviewError("Local session revisions are assigned from their round; --revision is for document repositories.")
+                    result = store.propose(read_graph(args.graph), args.summary, args.expect_version)
+                else:
+                    result = store.propose(read_graph(args.graph), args.summary, args.expect_version, args.revision)
             elif args.command == "annotate":
                 result = store.annotate(args.target_type, args.target_id, args.kind, args.text, args.source, args.source_ref, args.expect_version)
             elif args.command == "resolve":

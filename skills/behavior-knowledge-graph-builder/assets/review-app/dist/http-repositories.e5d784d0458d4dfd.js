@@ -9,14 +9,15 @@ export class RepositoryError extends Error {
 
 export function createHttpRepositories({ baseUrl = '', fetchImpl = globalThis.fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('An HTTP fetch implementation is required.');
-  const root = baseUrl.replace(/\/$/, '');
+  if (typeof baseUrl !== 'string') throw new TypeError('The HTTP repository baseUrl must be a string.');
+  const root = baseUrl.replace(/\/+$/, '');
   let tokenPromise;
   async function request(path, { method = 'GET', body } = {}) {
     const options = { method, cache: 'no-store', credentials: 'same-origin' };
     if (method !== 'GET') {
       if (!tokenPromise) {
         tokenPromise = request('/api/bootstrap').then(data => {
-          if (typeof data.csrf_token !== 'string' || !data.csrf_token) {
+          if (typeof data?.csrf_token !== 'string' || !data.csrf_token) {
             throw new Error('The review service did not provide a write token. Reload the app.');
           }
           return data.csrf_token;
@@ -31,7 +32,7 @@ export function createHttpRepositories({ baseUrl = '', fetchImpl = globalThis.fe
     catch { throw new RepositoryError('The review service returned an unreadable response. Your unsaved text is preserved.', response.status); }
     if (!response.ok) {
       if (response.status === 403) tokenPromise = null;
-      throw new RepositoryError(data.error || `Review request failed (${response.status}).`, response.status);
+      throw new RepositoryError(data?.error || `Review request failed (${response.status}).`, response.status);
     }
     return data;
   }
@@ -66,6 +67,14 @@ export function createHttpRepositories({ baseUrl = '', fetchImpl = globalThis.fe
       reopenAnnotation: (id, noteId, version) => write(graphPath(id) + '/reopen', 'POST', { annotation_id: noteId }, version),
       requestReview: (id, version) => write(graphPath(id) + '/request-review', 'POST', {}, version),
       approveReview: (id, input, version) => write(graphPath(id) + '/approve', 'POST', input, version),
+      listPendingFeedback: id => request(graphPath(id) + '/pending-feedback'),
+      markFeedbackProcessed: (id, noteId, feedbackRevision, outcome, summary, processor, version) =>
+        write(graphPath(id) + '/mark-processed', 'POST', {
+          annotation_id: noteId, feedback_revision: feedbackRevision, outcome, summary, processor,
+        }, version),
     },
   };
 }
+
+export function createHttpGraphRepository(options) { return createHttpRepositories(options).graphRepository; }
+export function createHttpReviewRepository(options) { return createHttpRepositories(options).reviewRepository; }

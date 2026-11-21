@@ -45,6 +45,9 @@ export async function buildArtifacts() {
   html = html.replace('src="./main.js"', `src="./${entry}"`)
     .replace('href="./styles.css"', `href="./${cssName}"`);
   artifacts.set('index.html', html);
+  // Keep a stable configuration URL while authenticating the shipped default.
+  // The local server can project its own public client configuration at this URL.
+  artifacts.set('config.json', await readFile(path.join(srcRoot, 'config.json'), 'utf8'));
   const sourceFiles = {};
   for (const name of (await readdir(srcRoot)).sort()) {
     sourceFiles['src/' + name] = sha(await readFile(path.join(srcRoot, name)));

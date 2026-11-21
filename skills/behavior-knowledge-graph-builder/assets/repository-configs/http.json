@@ -1,0 +1,13 @@
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "reviewService": {
+      "type": "http",
+      "base_url": "https://review.example.com/project-a",
+      "auth_token_env": "REVIEW_API_TOKEN",
+      "timeout": 15
+    }
+  },
+  "bindings": {"graphs": "reviewService", "reviews": "reviewService"},
+  "graph_id": "application-behavior"
+}

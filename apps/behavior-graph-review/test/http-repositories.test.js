@@ -61,6 +61,18 @@ test('review workflow operations retain explicit action meaning', async () => {
   assert.equal(calls.at(-1).body.expected_version,7);
 });
 
+test('agent feedback methods preserve exact annotation revision and review CAS version', async () => {
+  const {reviewRepository:r, calls} = fixture();
+  await r.listPendingFeedback('a/b');
+  await r.markFeedbackProcessed('a/b', 'note/1', 3, 'addressed', 'Applied to proposal', 'agent', 7);
+  assert.equal(calls[0].url, '/review/api/graphs/a%2Fb/pending-feedback');
+  assert.equal(calls.at(-1).url, '/review/api/graphs/a%2Fb/mark-processed');
+  assert.deepEqual(calls.at(-1).body, {
+    annotation_id: 'note/1', feedback_revision: 3, outcome: 'addressed',
+    summary: 'Applied to proposal', processor: 'agent', expected_version: 7,
+  });
+});
+
 test('HTTP conflicts surface without a retry and preserve status for draft recovery', async () => {
   let writes = 0;
   const {reviewRepository} = createHttpRepositories({async fetchImpl(url) {

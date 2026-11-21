@@ -1,0 +1,14 @@
+{
+  "schema_version": "behavior-review-config/1",
+  "repositories": {
+    "cloudGraphs": {
+      "type": "s3",
+      "bucket": "replace-with-your-bucket",
+      "prefix": "behavior-review/project-a",
+      "region": "eu-central-1"
+    },
+    "humanReviews": {"type": "sqlite", "path": "./data/reviews.sqlite3"}
+  },
+  "bindings": {"graphs": "cloudGraphs", "reviews": "humanReviews"},
+  "graph_id": "application-behavior"
+}

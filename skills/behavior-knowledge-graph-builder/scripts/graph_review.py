@@ -6,17 +6,20 @@ import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
+import math
 from pathlib import Path
 import secrets
 import socket
 import sqlite3
 import sys
+import time
 from urllib.parse import parse_qs, urlsplit, unquote
 
 sys.dont_write_bytecode = True
 
-from graph_model import KINDS, DISPOSITIONS, TARGET_TYPES, Store, ReviewError, parse_json, read_graph
-from graph_repositories import check_repositories, local_repositories, load_repositories
+from graph_model import KINDS, DISPOSITIONS, TARGET_TYPES, PROCESSING_OUTCOMES, Store, ReviewError, parse_json, read_graph
+from graph_repositories import check_repositories, check_feedback_repository, local_repositories, load_repositories
+from graph_connection import read_connection, session_connection, write_connection
 
 
 MAX_REQUEST_BYTES = 128 * 1024
@@ -345,6 +348,7 @@ def build_parser():
         sub = subparsers.add_parser(command)
         if command == "serve":
             storage = sub.add_mutually_exclusive_group(required=True)
+            storage.add_argument("--connection", type=Path, help="Saved repository locator shared with the feedback CLI")
             storage.add_argument("--session", type=Path)
             storage.add_argument("--workspace", type=Path, help="Catalog of initialized review-session directories")
             storage.add_argument("--repository-factory", help="Trusted module:callable or /path/plugin.py:callable returning graph/review repositories")
@@ -395,7 +399,83 @@ def build_parser():
             sub.add_argument("--out", required=True, type=Path)
     validate = subparsers.add_parser("validate")
     validate.add_argument("--graph", required=True, type=Path)
+    connect = subparsers.add_parser("connect", help="Save a trusted repository locator without storage credentials")
+    connect.add_argument("--connection", required=True, type=Path)
+    storage = connect.add_mutually_exclusive_group(required=True)
+    storage.add_argument("--session", type=Path)
+    storage.add_argument("--workspace", type=Path)
+    storage.add_argument("--repository-factory")
+    connect.add_argument("--repository-config", type=Path)
+    connect.add_argument("--graph-id")
+    for command in ("feedback-graphs", "feedback-status", "pending-feedback", "mark-processed"):
+        sub = subparsers.add_parser(command)
+        storage = sub.add_mutually_exclusive_group(required=True)
+        storage.add_argument("--connection", type=Path)
+        storage.add_argument("--session", type=Path, help="Explicit local session convenience")
+        if command != "feedback-graphs":
+            sub.add_argument("--graph-id", help="Opaque graph ID; defaults to the connection's graph_id")
+        if command == "pending-feedback":
+            sub.add_argument("--after-version", type=int)
+            sub.add_argument("--timeout", default=0, type=float, help="Bounded wait up to 30 seconds; requires --after-version")
+        elif command == "mark-processed":
+            sub.add_argument("--id", required=True)
+            sub.add_argument("--feedback-revision", required=True, type=int)
+            sub.add_argument("--outcome", required=True, choices=sorted(PROCESSING_OUTCOMES))
+            sub.add_argument("--summary", required=True)
+            sub.add_argument("--processor", required=True, help="Truthful agent/run reference, not an authenticated identity")
+            sub.add_argument("--expect-version", required=True, type=int)
     return parser
+
+
+def connection_receipt(connection):
+    return {"connection": str(connection.path) if connection.path else None,
+            "repository_kind": connection.kind, "graph_id": connection.graph_id,
+            "graphs": connection.repositories.graphs.list_graphs()}
+
+
+def feedback_command(args):
+    connection = read_connection(args.connection) if args.connection else session_connection(args.session)
+    repositories = connection.repositories
+    if args.command == "feedback-graphs":
+        return connection_receipt(connection)
+    graph_id = connection.select_graph(args.graph_id)
+    if args.command == "feedback-status":
+        review = repositories.reviews.get_review(graph_id)
+        if review.get("graph_id") != graph_id or not isinstance(review.get("graph_revision"), str):
+            raise ReviewError("Repository returned an inconsistent review identity.", 409)
+        snapshot = repositories.graphs.get_graph(graph_id, review["graph_revision"])
+        if (snapshot.get("id") != graph_id or snapshot.get("revision") != review["graph_revision"]
+                or snapshot.get("digest") != review.get("graph_digest")):
+            raise ReviewError("Review and immutable graph snapshot do not match. Refresh before processing feedback.", 409)
+        return {"connection": str(connection.path) if connection.path else None,
+                "graph": snapshot, "review": review}
+    feedback = check_feedback_repository(repositories.reviews)
+    if args.command == "mark-processed":
+        return feedback.mark_feedback_processed(graph_id, args.id, args.feedback_revision,
+                                                 args.outcome, args.summary, args.processor,
+                                                 args.expect_version)
+    if args.after_version is not None and args.after_version < 0:
+        raise ReviewError("after-version must be a nonnegative integer.")
+    if not math.isfinite(args.timeout) or not 0 <= args.timeout <= 30:
+        raise ReviewError("timeout must be between 0 and 30 seconds.")
+    if args.timeout and args.after_version is None:
+        raise ReviewError("A pending-feedback wait requires --after-version.")
+    deadline = time.monotonic() + args.timeout
+    while True:
+        pending = feedback.list_pending_feedback(graph_id)
+        if (pending.get("schema_version") != "behavior-review-feedback/1"
+                or pending.get("graph_id") != graph_id
+                or type(pending.get("state_version")) is not int
+                or not isinstance(pending.get("annotations"), list)):
+            raise ReviewError("Repository returned an invalid feedback inbox.", 409)
+        changed = args.after_version is not None and pending["state_version"] != args.after_version
+        remaining = deadline - time.monotonic()
+        if args.after_version is None or changed or remaining <= 0:
+            result = {**pending, "connection": str(connection.path) if connection.path else None}
+            if args.after_version is not None:
+                result["changed"] = changed
+            return result
+        time.sleep(min(0.5, remaining))
 
 
 def main(argv=None):
@@ -405,17 +485,32 @@ def main(argv=None):
             graph = read_graph(args.graph)
             result = {"valid": True, "nodes": len(graph["nodes"]), "dependencies": len(graph["dependencies"]),
                       "notice": "Structure and reference integrity checked; source truth and completeness are not verified."}
+        elif args.command == "connect":
+            connection = write_connection(args.connection, session=args.session, workspace=args.workspace,
+                                          factory=args.repository_factory, config=args.repository_config,
+                                          graph_id=args.graph_id)
+            result = connection_receipt(connection)
+        elif args.command in {"feedback-graphs", "feedback-status", "pending-feedback", "mark-processed"}:
+            result = feedback_command(args)
         elif args.command == "serve":
             if args.repository_config and not args.repository_factory:
                 raise ReviewError("--repository-config requires --repository-factory.")
-            if args.repository_factory:
+            connection = None
+            if args.connection:
+                connection = read_connection(args.connection)
+                repositories = connection.repositories
+            elif args.repository_factory:
                 repositories = load_repositories(args.repository_factory, args.repository_config)
             elif args.workspace:
                 repositories = local_repositories(workspace=args.workspace)
             else:
                 repositories = Store(args.session)
+                connection = write_connection(Path(args.session) / "connection.json", session=args.session)
             server, url = make_server(repositories, args.host, args.port, args.allowed_origin)
             info = {"url": url, "mode": "graph review"}
+            if connection is not None:
+                info["connection"] = str(connection.path)
+                info["graph_id"] = connection.graph_id
             if isinstance(repositories, Store):
                 info["session_id"] = repositories.state()["session_id"]
             else:
@@ -432,6 +527,9 @@ def main(argv=None):
             store = Store(args.session)
             if args.command == "init":
                 result = store.initialize(args.title)
+                connection = write_connection(store.directory / "connection.json", session=store.directory,
+                                              graph_id=result["session_id"])
+                result = {**result, "connection": str(connection.path)}
             elif args.command == "status":
                 result = store.state()
             elif args.command == "wait":
@@ -459,8 +557,15 @@ def main(argv=None):
                 result = store.export(args.out, args.expect_version)
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0
-    except (ReviewError, OSError, sqlite3.Error) as error:
+    except ReviewError as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error):
+        print(json.dumps({"error": "Review storage operation failed. Check the connection and storage access; processing was not confirmed."}), file=sys.stderr)
+        return 1
+    except Exception:
+        # Custom repository SDKs can include tokens or response bodies in errors.
+        print(json.dumps({"error": "Repository operation failed. Check the configured adapter; processing was not confirmed."}), file=sys.stderr)
         return 1
 
 

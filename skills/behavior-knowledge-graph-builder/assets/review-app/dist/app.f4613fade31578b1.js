@@ -1,4 +1,5 @@
 import { ReviewController } from './controller.4a3c556f82e38ce0.js';
+import { feedbackState, pendingFeedback, feedbackOutcome } from './feedback.a1f74aa131af90b6.js';
 
 /** Mount the review UI over graph and review repository interfaces. */
 export function mountReviewApp(repositories, {
@@ -94,7 +95,13 @@ export function mountReviewApp(repositories, {
   const graph = () => history ? history.graph : state && state.graph;
   const current = () => !history;
   const agentActive = () => state?.agent_active === true && !offline;
-  const feedbackGuidance = () => agentActive() ? 'Feedback is saved for the connected agent. It can read your notes and continue this review. A revised proposal appears here when the agent submits it.' : 'Feedback is saved. Return to chat and say “Review my graph feedback” so the agent can respond and prepare a revised proposal.';
+  const feedbackGuidance = () => {
+    const pending = pendingNotes(),
+      withdrawn = pending.filter(a => a.status === 'deleted').length;
+    const count = pending.length ? `${pending.length} ${pending.length === 1 ? 'note needs' : 'notes need'} AI review${withdrawn ? `, including ${withdrawn} withdrawn ${withdrawn === 1 ? 'note' : 'notes'}` : ''}. ` : '';
+    if (!state?.review_requested) return count + 'Notes are saved. Send feedback when you are ready, or ask the agent in chat to review it. Processing and settling a note are separate steps.';
+    return count + (agentActive() ? 'Feedback is submitted for the connected agent. Responses and revised proposals appear here when saved.' : 'Feedback is submitted. Return to chat and say “Review my graph feedback” to resume the agent.');
+  };
   const approvalGuidance = () => agentActive() ? 'This exact version is approved and saved for the connected agent. The agent can now create the final graph. Approval itself does not create files.' : 'This exact version is approved. Return to chat and ask the agent to create the final graph. Approval itself does not create files.';
   function renderPresence() {
     const el = $('agent-presence');
@@ -107,6 +114,7 @@ export function mountReviewApp(repositories, {
   const kindLabel = k => names[k] || k;
   const nice = s => String(s || '').replaceAll('_', ' ');
   const openNotes = () => state ? (state.annotations || []).filter(a => a.status === 'open') : [];
+  const pendingNotes = () => pendingFeedback(state?.annotations);
   const claimCount = g => (g?.nodes || []).reduce((n, x) => n + (x.claims || []).length, 0);
   const uncertainCount = g => (g?.nodes || []).reduce((n, x) => n + (x.claims || []).filter(c => c.basis !== 'supported').length, 0) + (g?.dependencies || []).filter(d => d.basis !== 'supported').length;
   const getNode = id => (graph()?.nodes || []).find(n => n.id === id);
@@ -419,7 +427,7 @@ export function mountReviewApp(repositories, {
     select.value = value;
     select.disabled = !state?.round;
     $('stats').replaceChildren();
-    for (const [n, t] of [[g?.nodes?.length || 0, 'items'], [g?.dependencies?.length || 0, 'relationships'], [openNotes().length, 'open notes']]) {
+    for (const [n, t] of [[g?.nodes?.length || 0, 'items'], [g?.dependencies?.length || 0, 'relationships'], [openNotes().length, 'open notes'], [pendingNotes().length, 'need AI review']]) {
       const el = newEl('span');
       el.append(newEl('strong', '', String(n)), document.createTextNode(t));
       $('stats').append(el);
@@ -960,10 +968,9 @@ export function mountReviewApp(repositories, {
     $('annotation-kind').disabled = historical;
     $('request-review').disabled = busy || historical || !state || state.review_requested;
     const notice = $('feedback-notice');
-    notice.classList.toggle('hidden', !historical && !state?.review_requested);
-    notice.className = 'notice' + (historical ? ' warning' : '') + (!historical && !state?.review_requested ? ' hidden' : '');
+    notice.className = 'notice' + (historical ? ' warning' : '') + (!historical && !state?.review_requested && !pendingNotes().length ? ' hidden' : '');
     notice.textContent = historical ? 'This is a past proposal. Note outcomes reflect the current review state. Return to the current round to add or settle notes.' : feedbackGuidance();
-    $('feedback-help').textContent = agentActive() ? 'The connected agent can read submitted feedback in this conversation. A new proposal appears here when it is ready. You can also continue in chat.' : 'Return to the chat and ask the agent to review your saved feedback. New proposals appear here when the agent submits them.';
+    $('feedback-help').textContent = '“AI processed” means the agent handled that revision of a note. It can still need your input or remain open. Editing a note queues its new revision for review. The page saves feedback; it does not run an AI.';
     $('request-review').textContent = state?.review_requested ? 'Feedback is ready for the agent' : 'Send feedback to the agent';
   }
   function annotationTargetExists(a) {
@@ -977,7 +984,7 @@ export function mountReviewApp(repositories, {
     const list = $('notes-list'),
       filter = $('note-filter').value;
     list.replaceChildren();
-    let notes = [...(state?.annotations || [])].filter(a => filter === 'deleted' ? a.status === 'deleted' : a.status !== 'deleted');
+    let notes = [...(state?.annotations || [])].filter(a => filter === 'pending' ? feedbackState(a).pending : filter === 'deleted' ? a.status === 'deleted' : a.status !== 'deleted');
     if (history) notes = notes.filter(a => a.round <= history.round);
     if (filter === 'open') notes = notes.filter(a => a.status === 'open');
     if (filter === 'selected') notes = notes.filter(a => a.target_type === selected.type && (a.target_id || null) === selected.id);
@@ -989,8 +996,9 @@ export function mountReviewApp(repositories, {
     for (const a of notes) {
       const card = newEl('article', 'note ' + a.status),
         meta = newEl('div', 'note-meta'),
-        left = newEl('div', 'row');
-      left.append(pill(nice(a.kind), a.status === 'open' ? 'amber' : 'teal'));
+        left = newEl('div', 'row'),
+        processing = feedbackState(a);
+      left.append(pill(nice(a.kind), 'blue'), pill(nice(a.status), a.status === 'open' ? 'amber' : a.status === 'resolved' ? 'teal' : ''));
       meta.append(left, newEl('span', '', `Round ${a.round} · ${a.source === 'ui' ? 'Review page' : a.source === 'chat' ? 'Chat' : 'Agent'}`));
       card.append(meta);
       const target = {
@@ -1001,6 +1009,17 @@ export function mountReviewApp(repositories, {
         if (annotationTargetExists(a)) selectTarget(target.type, target.id);else toast('This item was removed from the current proposal. The annotation remains part of the review.');
       }, 'note-target');
       card.append(targetBtn, newEl('p', 'note-body', a.text));
+      const processingRow = newEl('div', 'note-processing');
+      processingRow.append(pill(processing.label, processing.tone));
+      if (processing.revision) processingRow.append(newEl('span', 'tiny muted', `Feedback v${processing.revision}`));
+      card.append(processingRow);
+      if (processing.receipt) {
+        const receipt = processing.receipt,
+          response = newEl('div', 'processing-receipt' + (processing.receiptIsCurrent ? '' : ' previous'));
+        response.append(newEl('strong', '', `${processing.receiptIsCurrent ? 'AI response' : 'Previous AI response'} · feedback v${receipt.feedback_revision}`), newEl('div', '', feedbackOutcome(receipt.outcome)), newEl('p', '', receipt.summary));
+        if (!processing.receiptIsCurrent) response.append(newEl('div', 'tiny muted', 'This response belongs to an earlier revision. The latest feedback still needs review.'));
+        card.append(response);
+      }
       if (!annotationTargetExists(a)) card.append(newEl('div', 'orphan', 'Item not present in this proposal · note retained'));
       if (a.resolution) {
         const label = {
@@ -1047,12 +1066,13 @@ export function mountReviewApp(repositories, {
       panel.append(newEl('div', 'notice', approvalGuidance()));
     }
     const counts = newEl('div', 'review-stats');
-    for (const [n, label] of [[openNotes().length, 'open notes'], [uncertainCount(g), 'uncertain claims / links'], [(state.rounds || []).length, 'review rounds']]) {
+    for (const [n, label] of [[openNotes().length, 'open notes'], [pendingNotes().length, 'need AI review'], [uncertainCount(g), 'uncertain claims / links'], [(state.rounds || []).length, 'review rounds']]) {
       const b = newEl('div');
       b.append(newEl('strong', '', String(n)), newEl('span', '', label));
       counts.append(b);
     }
     panel.append(counts);
+    if (pendingNotes().length) panel.append(newEl('p', 'small-text muted', 'Some feedback still needs AI review, including any pending withdrawals. Processing does not settle a note or approve the graph. Open the Notes tab and choose “Needs AI review” to inspect it.'));
     renderCoverage(panel, 'Reviewed scope', g.project.scope);
     renderCoverage(panel, 'Inspected evidence', g.coverage.checked);
     renderCoverage(panel, 'Known blind spots', g.coverage.blind_spots, true);

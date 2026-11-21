@@ -6,6 +6,8 @@
 - Repository boundaries
 - Graph identity and consistent reads
 - Review writes and concurrency
+- Feedback processing
+- Durable repository connection
 - Bundled adapters and configuration
 - Implementing another adapter
 - Scope of the builder skill
@@ -34,6 +36,7 @@ these ports over the same-origin HTTP API.
 | --- | --- |
 | `GraphRepository` | `listGraphs()` and `getGraph(graphId, revision?)` |
 | `HumanReviewRepository` | Read review state; list/get/create/update/delete annotations; resolve/reopen notes; request review; approve the current review |
+| Optional `FeedbackProcessingRepository` on the server's review adapter | List outstanding feedback revisions and record a receipt for one exact handled revision |
 
 The server has corresponding Python protocols in `scripts/graph_repositories.py`.
 `GraphRepository` exposes `list_graphs()` and `get_graph(graph_id, revision=None)`.
@@ -43,6 +46,14 @@ The server has corresponding Python protocols in `scripts/graph_repositories.py`
 Use the signatures in that module and the frontend declarations as the exact
 implementation contract. Do not pass a SQLite connection or callback through a
 port. Explicit review actions preserve workflow rules beyond annotation CRUD.
+
+The Python feedback protocol adds `list_pending_feedback(graph_id)` and
+`mark_feedback_processed(graph_id, annotation_id, feedback_revision, outcome,
+summary, processor, expected_version)`. A review adapter can implement it alongside
+`HumanReviewRepository`. Existing adapters without this capability remain usable
+by the app; feedback commands must reject the missing capability clearly instead
+of pretending that work was read or acknowledged. The browser does not need a
+processing-write method to display the metadata returned in review snapshots.
 
 The default adapters may share local persistence, but neither port requires this.
 A composition can read graphs from one service and save human reviews in another.
@@ -102,33 +113,190 @@ state. Do not turn a conflict into a silent last-write-wins update.
 - Presence is operational metadata; it does not increment the semantic version
   or change approval.
 
+Processing receipts also use conditional writes and increment `state_version`,
+but do not invalidate approval or finalization. Keep their operational fields out
+of the semantic review digest. A changed version can require a client refresh even
+when the approved graph and discussion remain unchanged.
+
 There is no arbitrary review-state PUT endpoint. An adapter must not expose a
 shortcut that lets callers insert approvals or skip these checks.
 
+## Feedback processing
+
+Keep three independent meanings: annotation `status` describes an open, resolved,
+or deleted discussion; processing metadata tracks whether the agent handled the
+current feedback revision; approval records the human's decision about the exact
+settled graph. Processing never resolves a note, approves a graph, or clears
+`review_requested`. The existing settlement and export gates remain unchanged.
+
+Expose these additional annotation fields:
+
+```json
+{
+  "feedback_revision": 3,
+  "processed_revision": 3,
+  "processing_status": "processed",
+  "processing_receipt": {
+    "feedback_revision": 3,
+    "outcome": "needs_clarification",
+    "summary": "Asked whether cancellation is allowed after dispatch; the note remains open.",
+    "processed_at": "2026-11-21T12:00:00Z",
+    "processor": "review-agent-1",
+    "graph_revision": "4",
+    "graph_digest": "example-graph-content-digest"
+  }
+}
+```
+
+Derive `processing_status` as `unprocessed` when `processed_revision` is below
+`feedback_revision`, otherwise `processed`. A receipt is absent/null before an
+acknowledgment. `processor` identifies the actor recorded by the caller; it is not
+an authenticated identity or a worker lease. Receipt graph references identify
+the graph current when that outcome was recorded. A newer feedback revision keeps
+the previous receipt available; its revision shows that the new input is still
+pending, rather than erasing the earlier explanation.
+
+| Change | Processing effect |
+| --- | --- |
+| New UI/chat annotation | Start at `feedback_revision: 1`, `processed_revision: 0` |
+| New agent-only annotation | Start at revision `0`, with no human feedback pending |
+| Edit, delete, explicit reopen, or automatic reopen after the graph target changes | Increment `feedback_revision`; require a fresh acknowledgment |
+| Human resolution/disposition | Increment `feedback_revision` so the agent can inspect the decision |
+| Agent resolution/disposition | Do not create another feedback revision merely by recording the agent's response |
+| Mark processed | Advance `processed_revision` to the exact acknowledged revision and record the outcome |
+
+`list_pending_feedback` returns one consistent snapshot:
+
+```text
+{
+  schema_version: "behavior-review-feedback/1",
+  graph_id, graph_revision, graph_digest, state_version,
+  review_requested,
+  annotations: [the unprocessed annotation revisions]
+}
+```
+
+Include pending tombstones even though normal annotation lists hide deleted notes.
+A withdrawal can arrive while an agent is acting on earlier feedback and may
+require reassessing already saved work. A deletion remains deleted after processing.
+Pending entries may also be resolved notes containing a new human decision.
+
+To acknowledge, atomically compare both `expected_version` against the current
+review version and `feedback_revision` against the named annotation's current
+feedback revision. Reject stale values with a conflict. Record the receipt,
+advance the review version, and append an audit event in the same operation.
+Never acknowledge all current pending items from an earlier batch snapshot.
+After a conflict, re-read and assess the changed feedback rather than replacing
+the version token and retrying an old conclusion blindly. Check the current graph
+context too; an unchanged note revision does not establish that an old response
+still fits a changed graph. An already-processed revision conflicts as well: read
+its receipt before deciding whether any further action is needed.
+
+| Outcome | Use after |
+| --- | --- |
+| `addressed` | Saving the requested change or an answer that handles the feedback |
+| `needs_clarification` | Recording the specific unresolved question; the discussion may remain open |
+| `no_change` | Recording an explanation for retaining the current graph |
+| `withdrawn` | Handling the deletion and checking whether prior work needs adjustment |
+
+Save the actual graph/review work before acknowledging it. A receipt is not a
+substitute for a failed graph write or proof that the declared work occurred.
+Use one active consumer. Recovery is
+at-least-once: interruption after saving work but before acknowledging it leaves
+the revision pending. Inspect the current proposal, resolutions, receipts, and
+audit before repeating an action. No queue, lease, background model, or exactly-once
+execution is provided.
+
+`review_requested` remains the human's submitted/ready signal. Saving an individual
+note need not mean review is finished. The active skill processes a submitted batch
+or an explicit chat request; on resume it inspects pending work and prior outcomes.
+Publishing a proposal can clear the request flag without consuming the inbox.
+Processing metadata must therefore persist independently of that flag.
+
+Treat processing metadata as an additive review capability; the graph schema does
+not change. Existing human feedback without metadata is exposed as revision 1,
+unprocessed, including resolved and deleted notes; agent-only notes start at
+revision 0. The local adapter also uses retained author/change metadata and audit
+to recognize older agent-authored notes that received human input or were reopened.
+Do not manufacture historical receipts from a resolved status. Keep
+operational fields out of approval hashing so compatible legacy approvals remain
+valid. Missing processing support in a custom adapter must remain visible.
+
+## Durable repository connection
+
+Share a saved descriptor between the server and agent commands instead of making
+the skill infer a storage path. `init` creates `connection.json` inside a new local
+session. Use `connect` for an existing session, a workspace, or a custom factory.
+`serve --session` also creates or reuses that default descriptor for older sessions.
+Retain the descriptor path and chosen graph ID in the review handoff.
+
+The descriptor schema is `behavior-review-connection/1`. A local example is:
+
+```json
+{
+  "schema_version": "behavior-review-connection/1",
+  "repository": {"kind": "session", "path": "."},
+  "graph_id": "the-stable-session-id"
+}
+```
+
+For a catalog use `{"kind":"workspace","path":"../reviews"}`. For an existing
+adapter use `{"kind":"factory","factory":"my_project.review_adapters:create_repositories",
+"config":"./repository-config.json"}`; `config` is optional. Paths resolve against
+the descriptor's directory, not the caller's working directory. A factory module
+must still be importable in the executing environment.
+
+`graph_id` is optional in the descriptor, but a per-graph command must select an ID
+there or through `--graph-id`. `feedback-graphs` lists the catalog for selection;
+do not silently use its first item. `feedback-status` loads review metadata and
+the exact referenced graph snapshot, validating their identity, revision, and
+digest. `pending-feedback` and `mark-processed` use the optional feedback capability.
+Status, pending, and processing commands also accept `--session` for local use.
+`pending-feedback --after-version N --timeout 20` supports bounded polling through
+the same adapter; the maximum timeout is 30 seconds. It does not update agent
+presence. The existing local `wait` command remains the heartbeat-capable option.
+
+Feedback commands load the configured repositories directly in the trusted agent
+process; they do not require the viewer server to be running. No pending/processing
+write endpoint or model invocation is added to the browser API.
+
+The descriptor identifies a connection; it does not contain graph content or move
+review data. Keep credentials in the adapter's existing secret configuration.
+Treat descriptor/factory configuration as trusted startup input, never as something
+an annotation or a graph's arbitrary text can instruct the skill to execute.
+
 ## Bundled adapters and configuration
 
-Use one existing local session:
+Connect to one existing local session and use that connection for both consumers:
 
 ```bash
-python3 scripts/graph_review.py serve --session /absolute/reviews/orders --port 0
+python3 scripts/graph_review.py connect --connection /absolute/reviews/orders/connection.json --session /absolute/reviews/orders
+python3 scripts/graph_review.py serve --connection /absolute/reviews/orders/connection.json --port 0
+python3 scripts/graph_review.py pending-feedback --connection /absolute/reviews/orders/connection.json
 ```
 
 Use a catalog of initialized sessions directly inside one workspace directory:
 
 ```bash
-python3 scripts/graph_review.py serve --workspace /absolute/reviews --port 0
+python3 scripts/graph_review.py connect --connection /absolute/review-workspace.json --workspace /absolute/reviews
+python3 scripts/graph_review.py feedback-graphs --connection /absolute/review-workspace.json
+python3 scripts/graph_review.py feedback-status --connection /absolute/review-workspace.json --graph-id GRAPH_ID
+python3 scripts/graph_review.py serve --connection /absolute/review-workspace.json --port 0
 ```
 
 The local graph adapter reads immutable round snapshots. The local review adapter
 uses the existing SQLite-backed `Store` for transactions, audit, review actions,
-and shared browser/chat state. Existing session directories remain usable.
+feedback receipts, and shared browser/chat state. Existing session directories
+remain usable; direct `serve --session` and `serve --workspace` remain supported.
 
 For an already implemented custom pair, configure a repository factory:
 
 ```bash
-python3 scripts/graph_review.py serve \
+python3 scripts/graph_review.py connect --connection /absolute/review-connection.json \
   --repository-factory my_project.review_adapters:create_repositories \
-  --repository-config /absolute/repository-config.json --port 0
+  --repository-config /absolute/repository-config.json --graph-id orders
+python3 scripts/graph_review.py serve --connection /absolute/review-connection.json --port 0
+python3 scripts/graph_review.py pending-feedback --connection /absolute/review-connection.json
 ```
 
 The factory receives the configuration JSON object and returns
@@ -139,7 +307,9 @@ storage credentials server-side and out of the built frontend and public errors.
 
 ## Implementing another adapter
 
-Implement the two protocols independently and compose them in the factory. For
+Implement the two core protocols independently and compose them in the factory.
+Implement the optional feedback protocol on the review adapter when the agent
+must discover and acknowledge pending revisions. For
 example, an S3 graph adapter can return immutable versioned objects while a database
 review adapter stores versioned annotations and audit events. An API adapter can
 forward the same operations to an existing service. These are extension examples;
@@ -147,7 +317,9 @@ this release does not include S3 drivers, cloud provisioning, or authentication.
 
 Before using an adapter, verify graph/review ID isolation, immutable revisions,
 missing-record errors, conditional concurrent writes, approval invalidation,
-audit retention, and consistent source/digest references. A remote adapter must
+audit retention, and consistent source/digest references. For feedback support,
+also verify edit/delete/reopen races, pending tombstones, revision-bound receipts,
+and preservation of approval after operational acknowledgment. A remote adapter must
 use its backend's conditional-write or transactional facilities; local Python
 process locks are insufficient for independent writers.
 
@@ -162,4 +334,7 @@ It launches the released app and uses existing adapters. It does not generate th
 review application, rebuild the distribution, or invent a storage integration
 during normal graph review. The existing proposal and export CLI operates on
 local sessions; a remote authoring/export workflow needs an explicit integration
-that preserves the same approval and audit guarantees.
+that preserves the same approval and audit guarantees. The connection and feedback
+commands do not add that integration. If required work cannot be persisted through
+an available authoring capability, report the missing capability and leave that
+work unprocessed rather than acknowledging an unsaved result.

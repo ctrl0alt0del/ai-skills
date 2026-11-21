@@ -30,6 +30,8 @@ ASPECTS = {
 }
 KINDS = {"question", "correction", "missing", "confirmation", "note"}
 DISPOSITIONS = {"addressed", "accepted_gap", "rejected"}
+PROCESSING_OUTCOMES = {"addressed", "needs_clarification", "no_change", "withdrawn"}
+PROCESSING_FIELDS = {"feedback_revision", "processed_revision", "processing_status", "processing_receipt"}
 TARGET_TYPES = {"graph", "node", "dependency", "claim"}
 GRAPH_SCHEMA = {
     "schema_version": {SCHEMA_VERSION},
@@ -220,7 +222,44 @@ def selected(value, choices, name):
 
 
 def review_digest(state):
-    return digest({key: state[key] for key in ("round", "graph_digest", "annotations", "review_requested")})
+    # Processing is an operational receipt, not a change to human feedback.
+    # Projecting it away also preserves approval digests from older sessions.
+    semantic = {key: state[key] for key in ("round", "graph_digest", "review_requested")}
+    semantic["annotations"] = [
+        {key: value for key, value in note.items() if key not in PROCESSING_FIELDS}
+        for note in state["annotations"]
+    ]
+    return digest(semantic)
+
+
+def normalize_feedback(note, legacy_pending=False):
+    """Expose legacy notes without a write; derive status from monotonic revisions.
+
+    A new agent-authored note has no human feedback revision yet. Legacy agent
+    notes with a visible human edit, deletion, or resolution are conservatively
+    pending. The local adapter supplies legacy_pending when its audit contains
+    a reviewer interaction or reopening that older notes did not retain.
+    """
+    if "feedback_revision" not in note:
+        human_touch = (note.get("source") != "agent"
+                       or note.get("updated_by") in {"ui", "chat"}
+                       or note.get("deleted_by") in {"ui", "chat"}
+                       or (note.get("resolution") or {}).get("source") in {"ui", "chat"})
+        note["feedback_revision"] = 1 if human_touch or legacy_pending else 0
+    note.setdefault("processed_revision", 0)
+    note.setdefault("processing_receipt", None)
+    revision, processed = note["feedback_revision"], note["processed_revision"]
+    if (type(revision) is not int or type(processed) is not int
+            or not 0 <= processed <= revision):
+        raise ReviewError("Stored feedback revisions are invalid.", 409)
+    note["processing_status"] = "unprocessed" if processed < revision else "processed"
+    return note
+
+
+def advance_feedback(note):
+    normalize_feedback(note)
+    note["feedback_revision"] += 1
+    note["processing_status"] = "unprocessed"
 
 
 class Store:
@@ -274,7 +313,35 @@ class Store:
         row = connection.execute("SELECT content FROM state WHERE id=1").fetchone()
         if row is None:
             raise ReviewError("Session initialization is incomplete.", 409)
-        return json.loads(row[0])
+        state = json.loads(row[0])
+        legacy_agents = {note["id"] for note in state["annotations"]
+                         if "feedback_revision" not in note and note.get("source") == "agent"}
+        pending = set()
+        if legacy_agents:
+            # Older notes lack reopen actors. Consult the audit only during
+            # legacy normalization; never write or change semantic note fields.
+            for audit_row in connection.execute("SELECT content FROM audit ORDER BY id"):
+                event = json.loads(audit_row[0])
+                if event.get("state_version", 0) > state["state_version"]:
+                    continue
+                payload = event.get("payload", {})
+                if not isinstance(payload, dict):
+                    continue
+                if (event.get("source") in {"ui", "chat"}
+                        or event.get("action") in {"reopened", "annotation_edited", "annotation_deleted"}):
+                    identifier = payload.get("annotation_id")
+                    if identifier in legacy_agents:
+                        pending.add(identifier)
+                if event.get("action") == "proposed":
+                    for reopened in payload.get("reopened_annotations", []):
+                        identifier = reopened.get("annotation_id")
+                        if identifier in legacy_agents:
+                            pending.add(identifier)
+                if pending == legacy_agents:
+                    break
+        for note in state["annotations"]:
+            normalize_feedback(note, note["id"] in pending)
+        return state
 
     def state(self):
         with self.connection() as connection:
@@ -382,6 +449,7 @@ class Store:
                     if note["status"] == "resolved" and self.target_snapshot(state["graph"], note) != self.target_snapshot(graph, note):
                         reopened.append({"annotation_id": note["id"], "previous_resolution": note["resolution"]})
                         note.update(status="open", resolution=None)
+                        advance_feedback(note)
             metadata = {"round": number, "digest": graph_hash, "summary": summary,
                         "created_at": timestamp(), "node_count": len(graph["nodes"]),
                         "dependency_count": len(graph["dependencies"])}
@@ -434,7 +502,10 @@ class Store:
                 "target_id": target_id, "kind": kind, "text": text, "source": source,
                 "source_ref": source_ref, "round": state["round"], "created_at": timestamp(),
                 "status": "open", "resolution": None,
+                "feedback_revision": 0 if source == "agent" else 1,
+                "processed_revision": 0, "processing_receipt": None,
             }
+            normalize_feedback(annotation)
             state["annotations"].append(annotation)
             return annotation
 
@@ -452,6 +523,8 @@ class Store:
             resolution = {"disposition": disposition, "text": text, "source": source,
                           "round": state["round"], "at": timestamp()}
             note.update(status="resolved", resolution=resolution)
+            if source != "agent":
+                advance_feedback(note)
             return {"annotation_id": annotation_id, "resolution": resolution}
 
         return self.mutate(expected_version, "resolved", source, operation)
@@ -474,6 +547,7 @@ class Store:
             previous = json.loads(canonical(note))
             note.update(changes)
             note.update(status="open", resolution=None, updated_at=timestamp(), updated_by=source)
+            advance_feedback(note)
             return {"annotation_id": annotation_id, "previous": previous,
                     "annotation": json.loads(canonical(note))}
 
@@ -489,6 +563,7 @@ class Store:
                 raise ReviewError("Annotation is already deleted.", 409)
             previous = json.loads(canonical(note))
             note.update(status="deleted", deleted_at=timestamp(), deleted_by=source)
+            advance_feedback(note)
             return {"annotation_id": annotation_id, "previous": previous,
                     "annotation": json.loads(canonical(note))}
 
@@ -502,6 +577,8 @@ class Store:
         raise ReviewError("Annotation not found.", 404)
 
     def reopen(self, annotation_id, expected_version, source="agent"):
+        selected(source, {"ui", "chat", "agent"}, "source")
+
         def operation(state, connection):
             note = self._note(state, annotation_id)
             if note["status"] == "deleted":
@@ -510,9 +587,53 @@ class Store:
                 raise ReviewError("Annotation is already open.", 409)
             previous = note["resolution"]
             note.update(status="open", resolution=None)
+            advance_feedback(note)
             return {"annotation_id": annotation_id, "previous_resolution": previous}
 
         return self.mutate(expected_version, "reopened", source, operation)
+
+    def list_pending_feedback(self):
+        """Return one consistent inbox snapshot, including withdrawn notes."""
+        state = self.state()
+        return {
+            "schema_version": "behavior-review-feedback/1",
+            "graph_id": state["session_id"], "graph_revision": str(state["round"]),
+            "graph_digest": state["graph_digest"], "state_version": state["state_version"],
+            "review_requested": state["review_requested"],
+            "annotations": [note for note in state["annotations"]
+                            if note["processing_status"] == "unprocessed"],
+        }
+
+    def mark_feedback_processed(self, annotation_id, feedback_revision, outcome,
+                                summary, processor, expected_version):
+        """Acknowledge only the inspected revision, after its work is durable.
+
+        The caller owns evidence investigation and saving the resulting work.
+        This records that claim; it cannot prove work happened or approve policy.
+        A stale note or state fails atomically and remains pending for rereading.
+        """
+        if type(feedback_revision) is not int or feedback_revision < 1:
+            raise ReviewError("feedback_revision must be a positive integer.")
+        selected(outcome, PROCESSING_OUTCOMES, "processing outcome")
+        summary = text_value(summary, "processing summary")
+        processor = text_value(processor, "processor", 200)
+
+        def operation(state, connection):
+            note = self._note(state, annotation_id)
+            if note["feedback_revision"] != feedback_revision:
+                raise ReviewError("Feedback changed. Inspect the current annotation revision before marking it processed.", 409)
+            if note["processed_revision"] >= feedback_revision:
+                raise ReviewError("This feedback revision is already processed. Read its receipt before retrying.", 409)
+            receipt = {
+                "feedback_revision": feedback_revision, "outcome": outcome,
+                "summary": summary, "processor": processor, "processed_at": timestamp(),
+                "graph_revision": str(state["round"]), "graph_digest": state["graph_digest"],
+            }
+            note.update(processed_revision=feedback_revision, processing_status="processed",
+                        processing_receipt=receipt)
+            return {"annotation_id": annotation_id, "receipt": receipt}
+
+        return self.mutate(expected_version, "feedback_processed", "agent", operation, invalidate=False)
 
     def request_review(self, expected_version):
         def operation(state, connection):

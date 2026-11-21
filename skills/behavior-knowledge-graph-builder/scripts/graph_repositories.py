@@ -8,6 +8,8 @@ Review adapters own atomic compare-and-swap, annotation audit/tombstones, and th
 approval state machine. Every mutation must reject a stale expected_version with
 ReviewError(status=409), invalidate obsolete approval, and return the complete
 review DTO. There is intentionally no unrestricted save/PUT of review state.
+Processing receipts are operational metadata: they use the same atomic version
+check and audit, but never alter annotation disposition or invalidate approval.
 
 The default adapters share a local session catalog and delegate domain operations
 to Store. An API, S3, database, or filesystem integration may supply either port
@@ -41,6 +43,28 @@ class HumanReviewRepository(Protocol):
     def reopen_annotation(self, graph_id: str, annotation_id: str, expected_version: int) -> dict: ...
     def request_review(self, graph_id: str, expected_version: int) -> dict: ...
     def approve_review(self, graph_id: str, text: str, acknowledge_limits: bool, expected_version: int) -> dict: ...
+
+
+class FeedbackProcessingRepository(Protocol):
+    """Optional durable inbox capability on a human-review repository.
+
+    Return pending revisions, including deletion tombstones, from one consistent
+    snapshot. Mark exactly one revision with both note and review version checks;
+    never infer processing from a resolved note or acknowledge an unseen batch.
+    """
+
+    def list_pending_feedback(self, graph_id: str) -> dict: ...
+    def mark_feedback_processed(self, graph_id: str, annotation_id: str,
+                                feedback_revision: int, outcome: str, summary: str,
+                                processor: str, expected_version: int) -> dict: ...
+
+
+def check_feedback_repository(value):
+    for method in ("list_pending_feedback", "mark_feedback_processed"):
+        if not callable(getattr(value, method, None)):
+            raise ReviewError("The configured review repository does not support durable feedback processing "
+                              f"(missing {method}). Upgrade its adapter before processing feedback.", 501)
+    return value
 
 
 @dataclass(frozen=True)
@@ -174,6 +198,16 @@ class SQLiteHumanReviewRepository:
     def approve_review(self, graph_id, text, acknowledge_limits, expected_version):
         store, _ = self.catalog.find(graph_id)
         return review_dto(store.approve(text, "ui", None, acknowledge_limits, expected_version))
+
+    def list_pending_feedback(self, graph_id):
+        store, _ = self.catalog.find(graph_id)
+        return store.list_pending_feedback()
+
+    def mark_feedback_processed(self, graph_id, annotation_id, feedback_revision,
+                                outcome, summary, processor, expected_version):
+        store, _ = self.catalog.find(graph_id)
+        return review_dto(store.mark_feedback_processed(annotation_id, feedback_revision, outcome,
+                                                        summary, processor, expected_version))
 
 
 def local_repositories(session=None, workspace=None):

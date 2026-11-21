@@ -6,7 +6,8 @@ Reusable skills for understanding application behavior and refining requirements
 
 - [Behavior Graph Builder](skills/behavior-knowledge-graph-builder/SKILL.md):
   investigate application behavior, launch the shipped review app, collect graph
-  annotations, and export approved graph artifacts as JSON.
+  annotations, resume outstanding feedback through a saved repository connection,
+  and export approved graph artifacts as JSON.
 - [Requirement Refinement](skills/requirement-refinement/SKILL.md): analyze a
   proposed requirement with two isolated investigators and a fresh evidence judge,
   producing concrete decisions, investigations, and regression checks in Markdown
@@ -66,6 +67,45 @@ python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --
 python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --workspace /absolute/reviews-root --port 0
 ```
 
+### Feedback pickup across turns
+
+The app and skill share a saved repository connection. A new session's `init`
+command creates `connection.json`; serving an existing local session also creates
+or reuses it. For a workspace or an existing custom adapter, use `connect` to save
+the configuration. The skill reads that descriptor instead of assuming where
+the app stores reviews.
+
+```bash
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --connection /absolute/review-session/connection.json --port 0
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py feedback-status --connection /absolute/review-session/connection.json
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py pending-feedback --connection /absolute/review-session/connection.json
+```
+
+Use `feedback-graphs` to list the catalog and `--graph-id ID` when the descriptor
+does not select a graph. Reads pin the review to its exact graph revision.
+New or changed human feedback is **unprocessed** until the agent saves its outcome
+and records a receipt for that exact feedback revision with `mark-processed`.
+An edit, reopening, or deletion during the work remains pending; the agent cannot
+acknowledge it using the earlier revision. Withdrawn notes appear in the pending
+feed as tombstones, even though normal annotation lists hide them.
+
+Processing is separate from discussion resolution and graph approval. An agent
+can record `needs_clarification` while leaving a question open. Processing receipts
+do not approve a graph or invalidate an existing approval. The review's “send
+feedback” action remains the signal that the reviewer is ready for the agent;
+pending feedback survives subsequent proposal changes and interrupted turns.
+
+Feedback access uses an optional server-side `FeedbackProcessingRepository`
+capability on the review adapter. The bundled local adapter implements it; an
+older adapter can still display the app and explicitly report that processing
+support is unavailable. Feedback commands can reconnect without a running viewer
+server. They do not run a background model or add remote graph authoring/export.
+Use one active feedback consumer and inspect saved outcomes before repeating work
+after interruption. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md)
+for connection schemas, receipt fields, concurrency, and adapter requirements.
+
+### Building a release
+
 Build the app only when developing/releasing it (Node 18+, no package install):
 
 ```bash
@@ -88,6 +128,6 @@ node apps/behavior-graph-review/build.mjs --check
 
 These cover refinement artifact accounting and compatibility, graph/review adapter
 contracts, scoped annotation CRUD, version conflicts, approval invalidation, built
-asset serving, and frontend coordination. They do not measure reasoning accuracy
+asset serving, feedback pickup/receipts, and frontend coordination. They do not measure reasoning accuracy
 or authenticate that a host actually created isolated agent contexts. The app's
 README describes the optional browser smoke test and its environment requirements.

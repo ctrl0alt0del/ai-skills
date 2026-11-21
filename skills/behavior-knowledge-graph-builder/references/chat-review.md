@@ -1,13 +1,30 @@
 # Continue review in chat
 
+## Contents
+
+- [Resume the review](#resume-the-review)
+- [Present a round](#present-a-round)
+- [Record feedback](#record-feedback)
+- [Record approval](#record-approval)
+- [Missing runtime](#missing-runtime)
+
+## Resume the review
+
 Use the same session and versioned proposal whether the browser is unavailable,
 the user prefers chat, or a specific ambiguity is easier to discuss in text.
 Do not treat changing modality as a new review or approval.
+
+Resume through the saved repository connection, rather than guessing where the
+app stores annotations. Retain its path and selected graph ID in the task handoff.
+For local sessions, `init` creates `connection.json`; use `connect` for an older
+session or an already configured catalog/adapter. See `repository-contract.md`.
 
 When the viewer is reachable and the host can keep the turn active, the agent can
 use short `wait` calls to receive submitted browser feedback directly. Chat is the
 fallback after an idle pause, an unavailable viewer, or a user preference. On a
 clean pause call `disconnect`; resume the same saved session in the next turn.
+For a custom repository, bounded `pending-feedback --after-version N --timeout 20`
+can wait for review changes, but does not set an agent-presence indicator.
 
 ## Present a round
 
@@ -24,10 +41,19 @@ current representation. Do not require more rounds after clear approval.
 
 ## Record feedback
 
-Read current state before adding annotations. Use `annotate --source chat` with
+Read `feedback-status --connection PATH` and `pending-feedback --connection PATH`
+before adding annotations or acting on the user's new message. Select the graph
+with `--graph-id ID` if it is not recorded in the descriptor. Use the pinned graph
+returned by the status command. Pending feedback includes deletions and new human
+decisions on resolved notes, not only open discussions.
+
+For a local session, use `annotate --source chat` with
 the actual user's wording and a conversation reference. Use graph-level targets
 for missing concepts and exact node/dependency/claim IDs for corrections.
 If several feedback items require independent actions, record them separately.
+Use an existing authorized adapter capability for remote chat writes; the local
+authoring CLI does not silently write to a remote repository. Do not claim a chat
+correction was saved if persistence is unavailable.
 
 Incorporate the response into a new proposal when it changes the graph. Link new
 intended claims to human-feedback evidence with the review/chat reference. Preserve
@@ -35,8 +61,31 @@ contradictory implementation evidence. Resolve annotations only after addressing
 them, or after an explicit user decision to accept a gap. Explain rejected changes
 and keep that explanation visible for final review.
 
+For a pending item that still needs an answer, record the exact question and leave
+its discussion open. For a withdrawn note, inspect whether earlier work needs
+adjustment without resurrecting the deleted request. Do not confuse processing
+with resolution: a `needs_clarification` outcome may be processed and still open.
+
+After saving the actual outcome, use `mark-processed --connection PATH --id ID
+--feedback-revision REV --outcome OUTCOME --summary TEXT --processor ACTOR
+--expect-version N`. Select one of `addressed`, `needs_clarification`, `no_change`,
+or `withdrawn` and describe what was saved or remains unanswered. Acknowledge only
+the exact inspected revision. Re-read after a conflict; never acknowledge a newer
+edit, deletion, or reopening by substituting its token into an old conclusion.
+Refresh the pending feed after proposing a changed graph, because changed targets
+can reopen previously resolved notes.
+
+`review_requested` signals that the reviewer submitted feedback for handling;
+saving a note alone need not mean the reviewer finished. An explicit chat request
+also starts processing. Pending revisions persist if a proposal clears the flag.
+On interruption/resume, inspect saved outcomes, receipts, and review history before
+repeating work. Use one active consumer; there is no worker lease or background AI.
+
 If feedback only needed an answer, use `complete-review` after all annotations are
-dispositioned; keep the same graph round. Any feedback mutation clears approval.
+dispositioned; keep the same graph round. Semantic feedback changes clear approval.
+A processing receipt is operational: it does not resolve notes, clear the request,
+approve the graph, or invalidate an existing approval. If required graph/review
+writes could not be saved, leave the affected revision pending and report the gap.
 
 ## Record approval
 

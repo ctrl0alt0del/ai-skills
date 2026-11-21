@@ -34,8 +34,37 @@ export interface Annotation extends NewAnnotation {
   source_ref: string | null;
   created_at: string;
   updated_at?: string;
+  updated_by?: 'ui' | 'chat' | 'agent';
   deleted_at?: string;
+  deleted_by?: 'ui' | 'chat' | 'agent';
   resolution: null | { disposition: string; text: string; source: string; round: number; at: string };
+  /** Zero means an agent-authored note has not received human feedback. */
+  feedback_revision?: number;
+  processed_revision?: number;
+  /** Derived from processed_revision < feedback_revision; independent of status. */
+  processing_status?: 'unprocessed' | 'processed';
+  /** Retained across edits; may describe a previous feedback revision. */
+  processing_receipt?: FeedbackProcessingReceipt | null;
+}
+export type FeedbackOutcome = 'addressed' | 'needs_clarification' | 'no_change' | 'withdrawn';
+export interface FeedbackProcessingReceipt {
+  feedback_revision: number;
+  outcome: FeedbackOutcome;
+  summary: string;
+  processed_at: string;
+  processor: string;
+  graph_revision: string;
+  graph_digest: string | null;
+}
+export interface PendingFeedback {
+  schema_version: 'behavior-review-feedback/1';
+  graph_id: string;
+  graph_revision: string;
+  graph_digest: string | null;
+  state_version: number;
+  review_requested: boolean;
+  /** Includes unprocessed deletions, even though normal annotation lists hide them. */
+  annotations: Annotation[];
 }
 export interface ReviewSnapshot {
   graph_id: string;
@@ -69,5 +98,12 @@ export interface HumanReviewRepository {
   reopenAnnotation(graphId: string, annotationId: string, expectedVersion: number): Promise<ReviewSnapshot>;
   requestReview(graphId: string, expectedVersion: number): Promise<ReviewSnapshot>;
   approveReview(graphId: string, input: ApprovalInput, expectedVersion: number): Promise<ReviewSnapshot>;
+}
+/** Optional agent capability. The human review UI does not invoke these writes. */
+export interface FeedbackProcessingRepository {
+  listPendingFeedback(graphId: string): Promise<PendingFeedback>;
+  /** Acknowledge exactly the revision inspected, after saving the resulting work. */
+  markFeedbackProcessed(graphId: string, annotationId: string, feedbackRevision: number,
+    outcome: FeedbackOutcome, summary: string, processor: string, expectedVersion: number): Promise<ReviewSnapshot>;
 }
 export interface Repositories { graphRepository: GraphRepository; reviewRepository: HumanReviewRepository }

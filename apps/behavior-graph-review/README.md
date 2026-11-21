@@ -43,7 +43,7 @@ Every mutation receives `expectedVersion`. Repositories must reject stale writes
 with a conflict (the HTTP adapter exposes `status: 409`) and enforce review
 invariants atomically. The app preserves unsaved text, loads the new state, and
 requires an intentional retry. It does not implement blind write retries.
-Review changes invalidate prior approval; only explicit workflow operations may
+Semantic review changes invalidate prior approval; only explicit workflow operations may
 approve a settled version. A repository must not implement these methods as an
 unrestricted replacement of review state.
 
@@ -57,6 +57,51 @@ The controller ignores obsolete reads and writes after graph switches, rejects
 older state versions, and prevents late historical reads from replacing a newer
 selection. Browser draft/layout storage is private presentation state scoped by
 graph identity; the repositories remain authoritative for graphs and reviews.
+
+## Agent feedback and shared connections
+
+The review adapter also can implement the optional Python
+`FeedbackProcessingRepository` capability. It exposes pending feedback and
+version-bound acknowledgment to the agent CLI; it is not a third frontend storage
+repository or a model running in the browser. Adapters without that capability
+remain usable for the existing review UI and must report unsupported processing
+commands clearly.
+
+Annotation snapshots add `feedback_revision`, `processed_revision`, derived
+`processing_status`, and a `processing_receipt`. The receipt records the handled
+revision, outcome, explanation, processor, time, and referenced graph. A newer
+feedback revision retains the earlier receipt as history while becoming
+unprocessed again. The UI can display these values independently of the note's
+`open`, `resolved`, or `deleted` status.
+
+New human notes and subsequent edits, deletions, reopenings, or human dispositions
+need processing. Agent-only initial notes do not create human work, and an agent's
+resolution does not enqueue its own response. Pending reads include tombstones
+so a withdrawal cannot disappear while the agent handles an older copy.
+
+The agent saves its work, then acknowledges the exact feedback revision with the
+current expected review version. Stale acknowledgments fail. Outcomes are
+`addressed`, `needs_clarification`, `no_change`, and `withdrawn`; they do not resolve
+notes, clear submission requests, or approve the graph. Receipt bookkeeping
+advances the review version but stays outside the semantic approval digest.
+
+Use one saved `behavior-review-connection/1` descriptor for both `serve
+--connection PATH` and the agent's `feedback-status`, `pending-feedback`, and
+`mark-processed` commands. `init` writes a local session's `connection.json`;
+`connect` records an existing session, workspace catalog, or trusted adapter
+factory. Relative paths resolve against the descriptor. A graph must be selected
+explicitly by the descriptor or `--graph-id`, with `feedback-graphs` available for
+discovery. Storage credentials stay in server/adapter configuration.
+
+The “send feedback” action remains a readiness signal; saving a note alone need
+not mean the reviewer finished. Processing state persists independently of that
+signal. An active or resumed skill reads the repository, with bounded polling
+available; there is no background AI, permanent server guarantee, or worker lease.
+Commands can load the adapter without a running viewer. Remote graph authoring
+and export still require their own integration.
+
+The complete schemas, CLI examples, and migration rules are in the
+[repository contract](../../skills/behavior-knowledge-graph-builder/references/repository-contract.md).
 
 ## Build and checks
 

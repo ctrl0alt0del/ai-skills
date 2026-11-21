@@ -7,7 +7,7 @@ import path from 'node:path';
 
 const appRoot = path.dirname(fileURLToPath(import.meta.url));
 const srcRoot = path.join(appRoot, 'src');
-const defaultOut = path.resolve(appRoot, '../../skills/behavior-knowledge-graph-builder/assets/review-app/dist');
+const defaultOut = path.resolve(appRoot, '../../skills/behavior-graph-review-app/assets/review-app/dist');
 const schema = 'behavior-review-app-dist/1';
 const sha = content => createHash('sha256').update(content).digest('hex');
 

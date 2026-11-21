@@ -1,0 +1,405 @@
+{
+  "schema_version": "behavior-graph/1",
+  "project": {
+    "name": "Marketplace — illustrative example",
+    "scope": [
+      "Purchases, refunds, and purchase rewards in a fictional example"
+    ],
+    "sources": [
+      {
+        "id": "source.example",
+        "kind": "document",
+        "location": "assets/example-sources.md",
+        "revision": "illustrative-v1"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "commerce.purchase.complete",
+      "kind": "behavior",
+      "title": "Complete purchase",
+      "summary": "Confirm payment and grant the purchased item.",
+      "domain": "Commerce",
+      "aliases": [
+        "checkout",
+        "buy an item"
+      ],
+      "owner_role": "Commerce Engineering",
+      "claims": [
+        {
+          "id": "claim.purchase.trigger",
+          "aspect": "trigger",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "The customer confirms checkout.",
+          "evidence_ids": [
+            "ev.purchase_policy"
+          ]
+        },
+        {
+          "id": "claim.purchase.outcome",
+          "aspect": "outcome",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "Success means one debit and the purchased item are both recorded.",
+          "evidence_ids": [
+            "ev.purchase_policy"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commerce.refund.issue",
+      "kind": "behavior",
+      "title": "Issue refund",
+      "summary": "Reverse a purchase using its original funding allocation.",
+      "domain": "Commerce",
+      "aliases": [
+        "reverse purchase"
+      ],
+      "owner_role": "Payments Engineering",
+      "claims": [
+        {
+          "id": "claim.refund.allocation",
+          "aspect": "outcome",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "Refunds restore the original funding allocation.",
+          "evidence_ids": [
+            "ev.refund_policy"
+          ]
+        },
+        {
+          "id": "claim.refund.delivery",
+          "aspect": "recovery",
+          "perspective": "observed",
+          "basis": "unknown",
+          "statement": "The payment provider’s retry and delivery guarantees have not been inspected.",
+          "evidence_ids": []
+        }
+      ]
+    },
+    {
+      "id": "engagement.rewards.update",
+      "kind": "behavior",
+      "title": "Update purchase rewards",
+      "summary": "Increase reward progress when a purchase completes.",
+      "domain": "Engagement",
+      "aliases": [
+        "achievements",
+        "spending progress"
+      ],
+      "owner_role": "Engagement Engineering",
+      "claims": [
+        {
+          "id": "claim.rewards.calculation",
+          "aspect": "outcome",
+          "perspective": "observed",
+          "basis": "supported",
+          "statement": "The example handler increments progress using the full purchase total.",
+          "evidence_ids": [
+            "ev.example_handlers"
+          ]
+        },
+        {
+          "id": "claim.rewards.eligibility",
+          "aspect": "assumption",
+          "perspective": "intended",
+          "basis": "inferred",
+          "statement": "The total purchase amount represents reward-eligible spending.",
+          "evidence_ids": [
+            "ev.example_handlers",
+            "ev.proposed_feature"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commerce.purchase_record",
+      "kind": "state",
+      "title": "Purchase payment record",
+      "summary": "Purchase total and original funding allocation.",
+      "domain": "Commerce",
+      "aliases": [],
+      "owner_role": null,
+      "claims": [
+        {
+          "id": "claim.purchase.amount",
+          "aspect": "other",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "Total amount is the full price in minor currency units; funding allocation records how it was paid.",
+          "evidence_ids": [
+            "ev.data_meaning"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commerce.wallet.balance",
+      "kind": "state",
+      "title": "Available wallet balance",
+      "summary": "Funds currently available for a purchase.",
+      "domain": "Commerce",
+      "aliases": [],
+      "owner_role": null,
+      "claims": [
+        {
+          "id": "claim.wallet.balance",
+          "aspect": "other",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "Available balance is the amount currently available to spend.",
+          "evidence_ids": [
+            "ev.data_meaning"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commerce.purchase_completed.v1",
+      "kind": "event",
+      "title": "Purchase completed",
+      "summary": "Signals a completed purchase to downstream consumers.",
+      "domain": "Commerce",
+      "aliases": [],
+      "owner_role": null,
+      "claims": [
+        {
+          "id": "claim.event.payload",
+          "aspect": "other",
+          "perspective": "observed",
+          "basis": "supported",
+          "statement": "The example event carries a purchase identifier.",
+          "evidence_ids": [
+            "ev.example_handlers"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commerce.purchase.no_double_debit",
+      "kind": "rule",
+      "title": "One purchase, one debit",
+      "summary": "A retry must preserve the original debit outcome.",
+      "domain": "Commerce",
+      "aliases": [],
+      "owner_role": null,
+      "claims": [
+        {
+          "id": "claim.purchase.invariant",
+          "aspect": "invariant",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "A purchase must not debit the wallet more than once.",
+          "evidence_ids": [
+            "ev.purchase_policy"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commerce.purchase_api",
+      "kind": "interface",
+      "title": "Checkout API",
+      "summary": "Reports the result of purchase completion.",
+      "domain": "Experience",
+      "aliases": [],
+      "owner_role": null,
+      "claims": [
+        {
+          "id": "claim.api.success",
+          "aspect": "outcome",
+          "perspective": "intended",
+          "basis": "supported",
+          "statement": "Report success only after the debit and item records exist.",
+          "evidence_ids": [
+            "ev.purchase_policy"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "config.promotional_credits",
+      "kind": "configuration",
+      "title": "Promotional funding",
+      "summary": "Proposed control for promotional-credit payments.",
+      "domain": "Commerce",
+      "aliases": [],
+      "owner_role": null,
+      "claims": [
+        {
+          "id": "claim.config.promo",
+          "aspect": "other",
+          "perspective": "proposed",
+          "basis": "supported",
+          "statement": "A proposed flag enables promotional-credit funding.",
+          "evidence_ids": [
+            "ev.proposed_feature"
+          ]
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "dep.purchase.record",
+      "from": "commerce.purchase.complete",
+      "relationship": "writes",
+      "to": "commerce.purchase_record",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.example_handlers"
+      ],
+      "rationale": "Records the completed purchase and funding allocation.",
+      "conditions": []
+    },
+    {
+      "id": "dep.purchase.balance",
+      "from": "commerce.purchase.complete",
+      "relationship": "writes",
+      "to": "commerce.wallet.balance",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.purchase_policy"
+      ],
+      "rationale": "Purchase completion records a wallet debit.",
+      "conditions": []
+    },
+    {
+      "id": "dep.purchase.event",
+      "from": "commerce.purchase.complete",
+      "relationship": "emits",
+      "to": "commerce.purchase_completed.v1",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.example_handlers"
+      ],
+      "rationale": "Publishes the purchase identifier to consumers.",
+      "conditions": []
+    },
+    {
+      "id": "dep.rewards.event",
+      "from": "engagement.rewards.update",
+      "relationship": "consumes",
+      "to": "commerce.purchase_completed.v1",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.example_handlers"
+      ],
+      "rationale": "Starts the reward update when a purchase completes.",
+      "conditions": []
+    },
+    {
+      "id": "dep.rewards.amount",
+      "from": "engagement.rewards.update",
+      "relationship": "reads",
+      "to": "commerce.purchase_record",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.example_handlers"
+      ],
+      "rationale": "Reads the full purchase total to calculate progress.",
+      "conditions": []
+    },
+    {
+      "id": "dep.refund.purchase",
+      "from": "commerce.refund.issue",
+      "relationship": "reverses",
+      "to": "commerce.purchase.complete",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.refund_policy"
+      ],
+      "rationale": "Restores the original funding allocation.",
+      "conditions": []
+    },
+    {
+      "id": "dep.refund.record",
+      "from": "commerce.refund.issue",
+      "relationship": "reads",
+      "to": "commerce.purchase_record",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.example_handlers",
+        "ev.refund_policy"
+      ],
+      "rationale": "Needs the original funding allocation.",
+      "conditions": []
+    },
+    {
+      "id": "dep.purchase.invariant",
+      "from": "commerce.purchase.complete",
+      "relationship": "enforces",
+      "to": "commerce.purchase.no_double_debit",
+      "basis": "inferred",
+      "evidence_ids": [
+        "ev.purchase_policy"
+      ],
+      "rationale": "The intended invariant applies here; its enforcement mechanism needs inspection.",
+      "conditions": []
+    },
+    {
+      "id": "dep.api.purchase",
+      "from": "commerce.purchase_api",
+      "relationship": "exposes",
+      "to": "commerce.purchase.complete",
+      "basis": "supported",
+      "evidence_ids": [
+        "ev.purchase_policy"
+      ],
+      "rationale": "Presents the customer-visible success result.",
+      "conditions": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "ev.purchase_policy",
+      "kind": "documentation",
+      "location": "assets/example-sources.md#purchase-policy",
+      "source_id": "source.example",
+      "summary": "Fictional purchase and success rules."
+    },
+    {
+      "id": "ev.example_handlers",
+      "kind": "documentation",
+      "location": "assets/example-sources.md#example-handlers",
+      "source_id": "source.example",
+      "summary": "Fictional handler interactions and reward calculation."
+    },
+    {
+      "id": "ev.refund_policy",
+      "kind": "documentation",
+      "location": "assets/example-sources.md#refund-policy",
+      "source_id": "source.example",
+      "summary": "Fictional restoration rule and missing provider guarantees."
+    },
+    {
+      "id": "ev.data_meaning",
+      "kind": "documentation",
+      "location": "assets/example-sources.md#data-meaning",
+      "source_id": "source.example",
+      "summary": "Fictional amount and allocation semantics."
+    },
+    {
+      "id": "ev.proposed_feature",
+      "kind": "requirement",
+      "location": "assets/example-sources.md#proposed-feature",
+      "source_id": "source.example",
+      "summary": "Fictional proposed promotional feature with an unsettled reward rule."
+    }
+  ],
+  "coverage": {
+    "checked": [
+      "The bundled fictional policies and handler descriptions."
+    ],
+    "blind_spots": [
+      "Payment-provider delivery and deduplication guarantees are not inspected."
+    ],
+    "unexpanded": [
+      "External invoicing consumer."
+    ],
+    "conflicts": []
+  }
+}

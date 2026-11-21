@@ -9,7 +9,8 @@ import tempfile
 import unittest
 
 
-SKILL = Path(os.environ.get("BEHAVIOR_SKILL_DIR", Path(__file__).resolve().parents[1] / "skills" / "behavior-knowledge-graph-builder"))
+SKILL = Path(os.environ.get("BEHAVIOR_REVIEW_SKILL_DIR", os.environ.get(
+    "BEHAVIOR_SKILL_DIR", Path(__file__).resolve().parents[1] / "skills" / "behavior-graph-review-app")))
 sys.path.insert(0, str(SKILL / "scripts"))
 sys.dont_write_bytecode = True
 from graph_model import Store, ReviewError, PROCESSING_FIELDS, canonical, digest, review_digest

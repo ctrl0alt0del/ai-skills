@@ -6,7 +6,7 @@
 - Capture claims and evidence
 - Trace dependencies
 - Handle scope and freshness
-- Prepare human review
+- Prepare a readable proposal
 - Use the final graph for refinement
 
 ## Choose semantic units
@@ -104,17 +104,17 @@ flag affected claims for review. Keep baseline intent separate from new observed
 code. Preserve stable unaffected IDs and accepted decisions unless new evidence
 actually challenges them.
 
-## Prepare human review
+## Prepare a readable proposal
 
 Give humans business titles, short explanations, and examples. Introduce domain
 overviews first, then focus on a flow and its immediate relevant dependencies.
 Large maps need search, filters, neighborhood focus, and a list alternative; tell
 the user when a view hides nodes. Approval always covers the declared proposal.
 
-For each round, summarize additions, removals, changed meaning, resolved feedback,
-and remaining uncertainties. Keep operational implementation details in evidence
-panels. Ask targeted questions about real ambiguities; avoid demanding that the
-user review every extracted function or reapprove settled policy.
+For each result, summarize additions, removals, changed meaning, recommended
+feedback outcomes, and remaining uncertainties. Supply these to the caller with
+the graph. The review-app skill handles presentation controls, durable feedback,
+approval, and subsequent rounds; the builder can also return a standalone draft.
 
 ## Use the final graph for refinement
 

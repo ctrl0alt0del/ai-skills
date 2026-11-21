@@ -1,86 +1,98 @@
 # AI Skills
 
-Reusable skills for understanding application behavior and refining requirements.
+Reusable skills for understanding application behavior, reviewing behavior graphs,
+and refining requirements.
 
-## Skills
+## Skills and ownership
 
-- [Behavior Graph Builder](skills/behavior-knowledge-graph-builder/SKILL.md):
-  investigate application behavior, launch the shipped review app, collect graph
-  annotations, resume outstanding feedback through a saved repository connection,
-  and export approved graph artifacts as JSON.
-- [Requirement Refinement](skills/requirement-refinement/SKILL.md): analyze a
-  proposed requirement with two isolated investigators and a fresh evidence judge,
-  producing concrete decisions, investigations, and regression checks in Markdown
-  and JSON, with a separate review audit.
+| Skill | Responsibility | Result |
+| --- | --- | --- |
+| [Behavior Graph Builder](skills/behavior-knowledge-graph-builder/SKILL.md) | Create a graph or update a supplied graph from human feedback, code changes, or both | Validated graph proposal, change report, unresolved questions, and feedback recommendations |
+| [Behavior Graph Review App](skills/behavior-graph-review-app/SKILL.md) | Configure and start the shipped app, maintain a review across prompts, invoke the builder, and persist its results | A durable review session, exact feedback receipts, and human-approved graph artifacts when export is supported |
+| [Requirement Refinement](skills/requirement-refinement/SKILL.md) | Analyze a proposed requirement with two investigators and an evidence judge | Concrete decisions, investigations, and regression checks in Markdown and JSON, with a separate review audit |
 
-The behavior graph can be supplied as context to requirement refinement.
-The skills use different JSON schemas and have separate validators.
+The builder owns graph reasoning and validation. The review-app skill owns app
+setup, repositories, viewer startup, review mutations, approval, export, and session
+continuation. It passes graph/evidence data to the builder and publishes the
+returned proposal through the configured repositories. The builder can also run
+on its own without a review server or storage adapter.
 
-The host's subagent tools run the investigators and judge. The refinement helper
-freezes their shared input and validates candidate decisions and report lineage.
-When isolated agents are unavailable, the skill records an explicit sequential
-fallback; no external model API key or background service is required.
+A behavior graph can be supplied as context to requirement refinement. The graph
+and refinement report use different schemas and validators. The host launches
+the refinement investigators and judge; when isolated agents are unavailable, the
+skill records a sequential fallback. No background model service is required.
 
-## Development and AI handoff
+## Installation and invocation
 
-Read [HANDOFF.md](HANDOFF.md) before continuing development in a new thread or AI
-session. It records the original goals, verified research references, design
-decisions, implementation boundaries, graph/report contracts, validation status,
-known limitations, and suggested next work.
+Copy the desired directories from `skills/` into your local Codex skills directory
+(`$CODEX_HOME/skills`, normally `~/.codex/skills`). Keep each skill's references,
+scripts, and assets together. Install both graph skills for the complete review
+workflow; the focused builder and requirement refinement can be used independently.
 
-## Installation
+Invoke them with `$behavior-knowledge-graph-builder`,
+`$behavior-graph-review-app`, or `$requirement-refinement`.
 
-Copy either directory from `skills/` into your local Codex skills directory
-(`$CODEX_HOME/skills`, normally `~/.codex/skills`). Keep its references, scripts,
-and assets together.
-
-Behavior Graph Builder and the refinement review helper require Python 3.10 or
-newer. Local files, SQLite, and HTTP use the Python standard library; S3 storage
+Python 3.10+ runs the supporting tools. The graph builder and local/HTTP review
+storage use the Python standard library. The review app's optional S3 adapter
 additionally requires `boto3`.
 
-Invoke the installed skills with `$behavior-knowledge-graph-builder` or
-`$requirement-refinement`.
+## Create and update graphs
 
-## Graph review app
+Use the builder for three common requests:
 
-The review app is developed in [apps/behavior-graph-review](apps/behavior-graph-review)
-and its built distribution is committed inside the builder skill at
-`assets/review-app/dist/`. The skill launches this released app. It does not generate
-a frontend, install Node packages, or run a build during graph review.
+- Create an initial graph from application code, specifications, contracts, and tests.
+- Revise an existing graph from selected human review findings.
+- Update an existing graph after source changes, preserving stable identities and
+  the evidence versions of material that was not re-inspected.
 
-The UI uses two injected repositories:
+The builder distinguishes intended policy, observed implementation, and proposed
+changes. It returns unresolved questions instead of inventing decisions. Its
+output is a proposal; it does not mutate a review, acknowledge feedback, record
+human approval, or start an application.
 
-| Repository | Responsibility |
-| --- | --- |
-| `GraphRepository` | List available graphs and load a graph at an immutable revision |
-| `HumanReviewRepository` | Read review state; create, read, edit, and delete annotations; resolve/reopen notes; request review and approve a settled version |
-
-Both roles are configured independently by name in `config.json`. The included
-server adapters are filesystem JSON documents, SQLite, S3, a compatible HTTP API,
-and the existing local session/workspace adapter. Storage paths and credentials
-stay on the server. The default local workflow continues to use SQLite review
-sessions.
-
-The browser loads a separate public configuration. Its concrete adapters are
-HTTP for graph reads and review CRUD, JSON catalogs for published graph snapshots,
-and memory for an explicit graph catalog plus immutable snapshots. JSON and
-memory are graph-read adapters; review writes use a compatible HTTP service.
-Invalid configuration produces a visible startup error rather than silently
-changing storage. See the [app README](apps/behavior-graph-review/README.md),
-[repository configuration](skills/behavior-knowledge-graph-builder/references/repository-config.md),
-and [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md).
-
-Launch one session or a catalog of initialized direct child sessions:
+See the [authoring guide](skills/behavior-knowledge-graph-builder/references/graph-authoring.md),
+[graph schema](skills/behavior-knowledge-graph-builder/references/graph-schema.md),
+and [builder handoff contract](skills/behavior-knowledge-graph-builder/references/build-contract.md).
+A standalone graph can be checked with:
 
 ```bash
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --session /absolute/review-session --port 0
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --workspace /absolute/reviews-root --port 0
+python3 skills/behavior-knowledge-graph-builder/scripts/graph_build.py validate --graph ./proposal.json
 ```
 
-### Choose graph and review storage
+## Run a review across prompts
 
-For example, this server configuration keeps graph JSON on disk and human reviews
-in SQLite. Paths are relative to the configuration file:
+Use the review-app skill to create or resume the same review session, configure
+its storage, and start the packaged viewer. It prepares a bounded builder request
+with the exact current graph and feedback revisions, invokes the builder skill,
+checks the returned result against the authoritative review, and publishes any
+changed proposal. It then applies justified discussion outcomes and records exact
+processing receipts through the existing review commands.
+
+The app-owned continuation checkpoint retains the connection, graph selection,
+request/result artifacts, publication phase, and continuation context. On a later prompt,
+the skill re-reads the repositories and checkpoint before continuing. A stale
+result or ambiguous interrupted publication requires reconciliation; resuming a
+prompt must not blindly create a duplicate graph round. The helper does not
+invoke a model or run an autonomous background loop.
+
+The viewer and chat share one review. Processing feedback, resolving a discussion,
+and approving a graph remain separate actions. A processed question can stay
+open. The builder's recommendations do not authorize human approval.
+
+See [review orchestration and builder handoff](skills/behavior-graph-review-app/references/builder-handoff.md)
+and the [review runtime contract](skills/behavior-graph-review-app/references/runtime-contract.md).
+
+## Review application and storage
+
+The frontend source stays in [apps/behavior-graph-review](apps/behavior-graph-review).
+Its built distribution now ships inside **`skills/behavior-graph-review-app`** at
+`assets/review-app/dist/`. Ordinary review sessions launch those assets without
+creating a frontend, installing Node packages, or building the app. Explicit app
+maintenance belongs to the review-app skill and the maintained source project.
+
+The app receives two repositories: `GraphRepository` lists graphs and reads exact
+immutable revisions; `HumanReviewRepository` stores annotations, review workflow,
+and feedback-processing receipts. A server `config.json` selects them independently:
 
 ```json
 {
@@ -94,101 +106,56 @@ in SQLite. Paths are relative to the configuration file:
 }
 ```
 
-| Server adapter | Configuration fields |
-| --- | --- |
-| `filesystem` | `path` to a JSON document directory |
-| `sqlite` | `path` to a document database |
-| `s3` | `bucket`; optional `prefix`, `region`, `profile`, `endpoint_url` |
-| `http` | `base_url`; optional `auth_token_env` naming a token environment variable |
-| `session` | Either `session` or `workspace` for existing local reviews |
+The server includes filesystem, SQLite, S3, compatible HTTP API, and existing
+session/workspace adapters. The browser has separate HTTP, static JSON graph,
+and memory graph adapters; durable review writes use HTTP. Credentials remain
+server-side. Existing legacy session graph/review bindings must stay together;
+importing into document storage enables independent bindings.
 
-The S3 endpoint must support conditional writes; the adapter uses the SDK's
-credential providers. Existing custom repository factories remain supported.
-
-Register a validated proposal, initialize its review, and launch the shipped app:
+Launch an existing local session or configured review:
 
 ```bash
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py register-graph --config ./config.json --graph ./proposal.json --graph-id checkout --revision proposal-1
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py init-review --config ./config.json --graph-id checkout
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --config ./config.json --port 0
+python3 skills/behavior-graph-review-app/scripts/graph_review.py serve --session /absolute/review-session --port 0
+python3 skills/behavior-graph-review-app/scripts/graph_review.py serve --config /absolute/config.json --port 0
 ```
 
-Use `import-session --config PATH --session PATH` to copy existing local review
-history into document storage. Graph IDs and revision strings remain independent
-of filenames, object keys, and database locations.
+New storage requires explicit registration/initialization or session import.
+Changing configuration does not migrate data. Use the [configuration guide](skills/behavior-graph-review-app/references/repository-config.md),
+[examples](skills/behavior-graph-review-app/assets/repository-configs), and
+[repository contract](skills/behavior-graph-review-app/references/repository-contract.md)
+for provisioning, connections, and feedback commands.
 
-The server exposes a sanitized browser configuration at `/config.json`, using
-schema `behavior-review-client-config/1`. Its default binds both roles to the
-same-origin HTTP service. The optional server `client` property can instead name
-different public HTTP endpoints or select a JSON/memory graph adapter; it never
-exposes the server repository definitions. Keep deployment settings in the
-external server configuration rather than editing the installed app assets.
+### Migration from the combined builder
 
-### Feedback pickup across turns
+Existing session directories, databases, graph IDs, configuration schemas, and
+connection descriptors remain usable. Change command paths from the builder's
+former `scripts/graph_review.py` to the review-app skill's entry point shown above.
+No review data migration is needed solely because skill ownership moved. Keep
+runtime data and deployment configuration outside either installed skill.
 
-The app and skill share a saved repository connection. A new session's `init`
-command creates `connection.json`; serving an existing local session also creates
-or reuses it. For configured storage, a workspace, or an existing custom adapter,
-use `connect` to save the connection. The skill reads that descriptor instead of
-assuming where the app stores reviews.
+Document repositories support graph proposals and review authoring. HTTP agent
+authoring needs a compatible integration, and final artifact-bundle export still
+uses local sessions. Moving ownership does not expand those backend capabilities.
 
-```bash
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --connection /absolute/review-session/connection.json --port 0
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py feedback-status --connection /absolute/review-session/connection.json
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py pending-feedback --connection /absolute/review-session/connection.json
-```
+## Development and AI handoff
 
-The same feedback commands accept `--config PATH`. Save a connection to that
-configuration when the app and future agent turns should reuse it:
+Read [HANDOFF.md](HANDOFF.md) before continuing in a new thread or AI session. It
+records the research references, ownership decisions, contracts, validation
+history, and remaining work. Preserve the focused builder boundary when adding
+new app or storage capabilities.
 
-```bash
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py connect --connection ./connection.json --config ./config.json
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py pending-feedback --config ./config.json
-```
-
-Use `feedback-graphs` to list the catalog and `--graph-id ID` when the descriptor
-does not select a graph. Reads pin the review to its exact graph revision.
-New or changed human feedback is **unprocessed** until the agent saves its outcome
-and records a receipt for that exact feedback revision with `mark-processed`.
-An edit, reopening, or deletion during the work remains pending; the agent cannot
-acknowledge it using the earlier revision. Withdrawn notes appear in the pending
-feed as tombstones, even though normal annotation lists hide them.
-
-Processing is separate from discussion resolution and graph approval. An agent
-can record `needs_clarification` while leaving a question open. Processing receipts
-do not approve a graph or invalidate an existing approval. The review's “send
-feedback” action remains the signal that the reviewer is ready for the agent;
-pending feedback survives subsequent proposal changes and interrupted turns.
-
-Feedback access uses an optional server-side `FeedbackProcessingRepository`
-capability on the review adapter. The bundled storage adapters implement it; an
-older adapter can still display the app and explicitly report that processing
-support is unavailable. Feedback commands can reconnect without a running viewer
-server. They do not run a background model. The document adapters support graph
-registration, review initialization, and session import. HTTP agent authoring
-requires a separate integration, and final artifact export remains a local
-session operation.
-Use one active feedback consumer and inspect saved outcomes before repeating work
-after interruption. See the [repository contract](skills/behavior-knowledge-graph-builder/references/repository-contract.md)
-for connection schemas, receipt fields, concurrency, and adapter requirements.
-
-### Building a release
-
-Build the app only when developing/releasing it (Node 18+, no package install):
+Build the app only when maintaining or releasing it (Node 18+, no package install):
 
 ```bash
 node apps/behavior-graph-review/build.mjs
 node apps/behavior-graph-review/build.mjs --check
 ```
 
-The build fingerprints assets, includes a stable public `config.json`, and records
-their hashes; it does not transpile or minify JavaScript. The server validates the
-shipped manifest before serving files, then serves its public configuration
-projection without modifying the bundled default.
+The default release output is
+`skills/behavior-graph-review-app/assets/review-app/dist`. The deterministic build
+fingerprints assets and includes a public `config.json` in its manifest.
 
-## Development checks
-
-Run the Python suites, frontend tests, and distribution check from the repository root:
+Run checks from the repository root:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
@@ -196,10 +163,9 @@ node --test apps/behavior-graph-review/test/*.test.js
 node apps/behavior-graph-review/build.mjs --check
 ```
 
-These cover refinement artifact accounting and compatibility, graph/review adapter
-contracts, configured storage bindings, scoped annotation CRUD, version conflicts,
-approval invalidation, built asset serving, feedback pickup/receipts, and frontend
-coordination. S3 tests use controlled clients; no live S3 integration test was run
-for this change. These checks do not measure reasoning accuracy
-or authenticate that a host actually created isolated agent contexts. The app's
-README describes the optional browser smoke test and its environment requirements.
+The tests cover graph/review contracts, storage, feedback, handoffs, and frontend
+coordination. The two graph skills carry matching pure graph/build contract
+modules so each package can load without a hardcoded installed sibling path.
+S3 tests use controlled clients; current verification does not establish a live
+cloud deployment or rendered browser layout. See the [app README](apps/behavior-graph-review/README.md)
+for the optional browser smoke test.

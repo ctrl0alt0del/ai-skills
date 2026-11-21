@@ -10,7 +10,7 @@
 - Durable repository connection
 - Bundled adapters and configuration
 - Implementing another adapter
-- Scope of the builder skill
+- Scope of the review-app skill
 
 ## Packaged app
 
@@ -344,12 +344,18 @@ The supplied HTTP server keeps Host/Origin checks, JSON-only mutations and a
 server-issued CSRF token. These protect the local browser workflow; they are not
 an account or authorization system for public deployment.
 
-## Scope of the builder skill
+## Scope of the review-app skill
 
-The skill investigates application behavior and authors/revises graph proposals.
-It launches the released app and uses existing adapters. It does not generate the
+The review-app skill sets up the released viewer, chooses existing repositories,
+coordinates the review across prompts, and passes graph-building work to Behavior
+Knowledge Graph Builder. The builder receives a graph plus selected review/code
+changes and returns a proposed graph with a change report; it does not manage the
+app, mutate review ledgers, acknowledge feedback, or record human approval.
+
+The review-app skill publishes builder results through the selected repository and
+records review outcomes only after the result is saved. It does not generate the
 review application, rebuild the distribution, or invent a storage integration
-during normal graph review. Proposal and agent/chat review commands work on local
+during ordinary review. Proposal and agent/chat review commands work on local
 sessions and configured filesystem/SQLite/S3 document repositories. HTTP-only
 repositories need their own trusted authoring integration. Final artifact export
 currently remains local-session-only. If required work cannot be persisted through

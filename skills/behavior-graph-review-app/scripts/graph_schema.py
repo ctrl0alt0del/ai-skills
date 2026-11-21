@@ -1,7 +1,7 @@
-"""Shared graph contract, validation, and feedback metadata primitives.
+"""Pure behavior-graph schema, strict validation, and canonical JSON helpers.
 
-Kept independent of persistence so every repository applies the same rules.
-The graph_model module re-exports these names for existing integrations.
+This module has no app, repository, review-state, or server dependencies. Ship
+identical copies with graph-building and review-app skills; parity is tested.
 """
 
 from datetime import datetime, timezone
@@ -23,11 +23,6 @@ ASPECTS = {
     "actor", "trigger", "precondition", "state_transition", "outcome", "invariant",
     "timing", "failure", "recovery", "assumption", "other",
 }
-KINDS = {"question", "correction", "missing", "confirmation", "note"}
-DISPOSITIONS = {"addressed", "accepted_gap", "rejected"}
-PROCESSING_OUTCOMES = {"addressed", "needs_clarification", "no_change", "withdrawn"}
-PROCESSING_FIELDS = {"feedback_revision", "processed_revision", "processing_status", "processing_receipt"}
-TARGET_TYPES = {"graph", "node", "dependency", "claim"}
 GRAPH_SCHEMA = {
     "schema_version": {SCHEMA_VERSION},
     "project": {
@@ -58,7 +53,7 @@ GRAPH_SCHEMA = {
 }
 
 
-class ReviewError(Exception):
+class GraphError(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.status = status
@@ -93,7 +88,7 @@ def parse_json(text):
     try:
         return json.loads(text, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     except (ValueError, RecursionError) as error:
-        raise ReviewError("Invalid JSON: " + str(error)) from error
+        raise GraphError("Invalid JSON: " + str(error)) from error
 
 
 def read_graph(path):
@@ -101,10 +96,10 @@ def read_graph(path):
         with Path(path).open("rb") as stream:
             data = stream.read(MAX_GRAPH_BYTES + 1)
         if len(data) > MAX_GRAPH_BYTES:
-            raise ReviewError("Graph exceeds the 8 MiB limit.")
+            raise GraphError("Graph exceeds the 8 MiB limit.")
         graph = parse_json(data.decode("utf-8-sig"))
     except (OSError, UnicodeError) as error:
-        raise ReviewError("Cannot read graph: " + str(error)) from error
+        raise GraphError("Cannot read graph: " + str(error)) from error
     validate_graph(graph)
     return graph
 
@@ -150,9 +145,9 @@ def validate_graph(graph):
     try:
         check(graph, GRAPH_SCHEMA, "graph")
     except RecursionError as error:
-        raise ReviewError("Graph nesting is too deep.") from error
+        raise GraphError("Graph nesting is too deep.") from error
     if errors:
-        raise ReviewError("Invalid graph:\n" + "\n".join(errors[:50]))
+        raise GraphError("Invalid graph:\n" + "\n".join(errors[:50]))
     if not graph["nodes"]:
         errors.append("A reviewable proposal requires at least one node.")
     if not graph["project"]["scope"]:
@@ -194,65 +189,23 @@ def validate_graph(graph):
             if edge[endpoint] not in known["nodes"]:
                 errors.append(edge["id"] + ": unknown " + endpoint + " node " + edge[endpoint])
     if errors:
-        raise ReviewError("Invalid graph:\n" + "\n".join(errors[:50]))
+        raise GraphError("Invalid graph:\n" + "\n".join(errors[:50]))
     return graph
 
 
 def text_value(value, name, limit=12000):
     if not isinstance(value, str) or not value.strip():
-        raise ReviewError(name + " must be a nonempty string.")
+        raise GraphError(name + " must be a nonempty string.")
     if len(value) > limit:
-        raise ReviewError(name + f" exceeds {limit} characters.")
+        raise GraphError(name + f" exceeds {limit} characters.")
     try:
         value.encode("utf-8")
     except UnicodeError as error:
-        raise ReviewError(name + " contains invalid Unicode.") from error
+        raise GraphError(name + " contains invalid Unicode.") from error
     return value.strip()
 
 
 def selected(value, choices, name):
     if not isinstance(value, str) or value not in choices:
-        raise ReviewError(name + " must be one of " + ", ".join(sorted(choices)))
+        raise GraphError(name + " must be one of " + ", ".join(sorted(choices)))
     return value
-
-
-def review_digest(state):
-    # Processing is an operational receipt, not a change to human feedback.
-    # Projecting it away also preserves approval digests from older sessions.
-    semantic = {key: state[key] for key in ("round", "graph_digest", "review_requested")}
-    semantic["annotations"] = [
-        {key: value for key, value in note.items() if key not in PROCESSING_FIELDS}
-        for note in state["annotations"]
-    ]
-    return digest(semantic)
-
-
-def normalize_feedback(note, legacy_pending=False):
-    """Expose legacy notes without a write; derive status from monotonic revisions.
-
-    A new agent-authored note has no human feedback revision yet. Legacy agent
-    notes with a visible human edit, deletion, or resolution are conservatively
-    pending. The local adapter supplies legacy_pending when its audit contains
-    a reviewer interaction or reopening that older notes did not retain.
-    """
-    if "feedback_revision" not in note:
-        human_touch = (note.get("source") != "agent"
-                       or note.get("updated_by") in {"ui", "chat"}
-                       or note.get("deleted_by") in {"ui", "chat"}
-                       or (note.get("resolution") or {}).get("source") in {"ui", "chat"})
-        note["feedback_revision"] = 1 if human_touch or legacy_pending else 0
-    note.setdefault("processed_revision", 0)
-    note.setdefault("processing_receipt", None)
-    revision, processed = note["feedback_revision"], note["processed_revision"]
-    if (type(revision) is not int or type(processed) is not int
-            or not 0 <= processed <= revision):
-        raise ReviewError("Stored feedback revisions are invalid.", 409)
-    note["processing_status"] = "unprocessed" if processed < revision else "processed"
-    return note
-
-
-def advance_feedback(note):
-    normalize_feedback(note)
-    note["feedback_revision"] += 1
-    note["processing_status"] = "unprocessed"
-

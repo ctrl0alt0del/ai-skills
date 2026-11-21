@@ -1,9 +1,47 @@
 # Behavior Graph Review app
 
 This is the maintained source for the graph-review frontend bundled with
-`behavior-knowledge-graph-builder`. The skill launches its packaged server and
+`behavior-graph-review-app`. The skill launches its packaged server and
 serves `assets/review-app/dist`. Ordinary skill use needs Python 3.10+ and does
 not scaffold an app, install frontend dependencies, or run a build.
+
+## Skill ownership and session orchestration
+
+[Behavior Graph Review App](../../skills/behavior-graph-review-app/SKILL.md) owns
+this application, its packaged runtime, repository configuration, server startup,
+review mutations, approval/export operations, and continuation across prompts.
+[Behavior Graph Builder](../../skills/behavior-knowledge-graph-builder/SKILL.md)
+owns graph creation and updates from selected human feedback or source changes.
+It does not operate the app or write review state.
+
+The review-app skill creates or resumes a durable session, captures its exact
+pinned graph and selected feedback revisions, and invokes the builder with a
+versioned request. The builder returns a graph proposal, a change report,
+remaining questions, and feedback recommendations. The app validates the result
+against the current repository state before publishing it through `propose`.
+An unchanged graph does not require another proposal round.
+
+The app's `scripts/review_session.py` handles request preparation, result
+application, and continuation status. Its checkpoint keeps repository locators
+separate from builder input, records publication progress, and exposes work that
+needs reconciliation after interruption. The graph/review repositories remain
+authoritative. Stale state, mismatched identities, or ambiguous publication must
+not become an automatic retry with a new version token.
+
+Applying a builder result does not automatically resolve annotations, acknowledge
+feedback, approve a graph, or export final artifacts. The coordinating skill
+performs the justified follow-up through the existing review commands. It
+re-reads annotations after publication because a changed graph target can reopen
+a discussion and advance its feedback revision. A builder recommendation for an
+older revision cannot consume that newer feedback.
+
+See the [builder handoff reference](../../skills/behavior-graph-review-app/references/builder-handoff.md)
+and [pure build contract](../../skills/behavior-knowledge-graph-builder/references/build-contract.md).
+The helper does not run an LLM or a background loop; the host agent invokes the
+builder and resumes the review on later prompts. App maintenance is performed
+when requested against this maintained source project, then the reviewed
+production build is shipped with the review-app skill. Ordinary graph review
+uses the existing distribution.
 
 ## Architecture
 
@@ -72,9 +110,9 @@ selects either `session` or `workspace`. Built-in S3 support requires the option
 From the repository root, register a valid proposal and initialize its review:
 
 ```bash
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py register-graph --config ./config.json --graph ./proposal.json --graph-id checkout --revision proposal-1
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py init-review --config ./config.json --graph-id checkout
-python3 skills/behavior-knowledge-graph-builder/scripts/graph_review.py serve --config ./config.json --port 0
+python3 skills/behavior-graph-review-app/scripts/graph_review.py register-graph --config ./config.json --graph ./proposal.json --graph-id checkout --revision proposal-1
+python3 skills/behavior-graph-review-app/scripts/graph_review.py init-review --config ./config.json --graph-id checkout
+python3 skills/behavior-graph-review-app/scripts/graph_review.py serve --config ./config.json --port 0
 ```
 
 `import-session --config PATH --session PATH` copies an existing local review
@@ -135,7 +173,7 @@ credentials.
 Keep deployment configuration outside the installed app assets. The shipped
 `config.json` is a default covered by the distribution manifest; the server's
 public projection replaces its response without editing that authenticated file.
-See [repository configuration](../../skills/behavior-knowledge-graph-builder/references/repository-config.md)
+See [repository configuration](../../skills/behavior-graph-review-app/references/repository-config.md)
 for complete schemas, adapter options, lifecycle commands, and migration details.
 
 ## Repository guarantees
@@ -206,7 +244,7 @@ discovery. Storage credentials stay in server/adapter configuration.
 
 The “send feedback” action remains a readiness signal; saving a note alone need
 not mean the reviewer finished. Processing state persists independently of that
-signal. An active or resumed skill reads the repository, with bounded polling
+signal. The active or resumed review-app skill reads the repository, with bounded polling
 available; there is no background AI, permanent server guarantee, or worker lease.
 Commands can load the adapter without a running viewer. The document adapters
 support proposal registration and review initialization through `register-graph`
@@ -215,7 +253,20 @@ requires a separate integration. Final graph artifact export remains the local
 session workflow.
 
 The complete schemas, CLI examples, and migration rules are in the
-[repository contract](../../skills/behavior-knowledge-graph-builder/references/repository-contract.md).
+[repository contract](../../skills/behavior-graph-review-app/references/repository-contract.md).
+
+## Ownership migration
+
+Existing review data and its schemas do not move when the skill ownership changes.
+Sessions, database files, config.json files, saved connections, graph IDs, and
+processing receipts remain compatible. Update scripts or shortcuts that used the
+old builder-owned `graph_review.py` path to
+`skills/behavior-graph-review-app/scripts/graph_review.py`.
+
+The builder keeps pure graph validation and build-result tooling. The app bundles
+matching copies of the pure schema and handoff contracts, with parity checks, so
+neither runtime imports a generated personal-skill directory name. Source changes
+to those shared contracts must be released consistently in both packages.
 
 ## Build and checks
 
@@ -231,7 +282,7 @@ node --test apps/behavior-graph-review/test/*.test.js
 ```
 
 The default output is
-`skills/behavior-knowledge-graph-builder/assets/review-app/dist`.
+`skills/behavior-graph-review-app/assets/review-app/dist`.
 To build or check a different installed distribution:
 
 ```bash

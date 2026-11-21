@@ -47,18 +47,20 @@ with `--graph-id ID` if it is not recorded in the descriptor. Use the pinned gra
 returned by the status command. Pending feedback includes deletions and new human
 decisions on resolved notes, not only open discussions.
 
-For a local session, use `annotate --source chat` with
+For a local session or configured document review, use `annotate --source chat` with
 the actual user's wording and a conversation reference. Use graph-level targets
 for missing concepts and exact node/dependency/claim IDs for corrections.
 If several feedback items require independent actions, record them separately.
-Use an existing authorized adapter capability for remote chat writes; the local
-authoring CLI does not silently write to a remote repository. Do not claim a chat
-correction was saved if persistence is unavailable.
+Use the selected `--connection` or `--config` for supported document-review
+commands. HTTP-only authoring needs an existing authorized integration. Do not
+claim a chat correction was saved if persistence is unavailable.
 
-Incorporate the response into a new proposal when it changes the graph. Link new
-intended claims to human-feedback evidence with the review/chat reference. Preserve
-contradictory implementation evidence. Resolve annotations only after addressing
-them, or after an explicit user decision to accept a gap. Explain rejected changes
+Pass the pinned graph, exact selected feedback revisions, relevant source context,
+and conversation references to Behavior Knowledge Graph Builder. Have the builder
+return the revised proposal and per-item reasoning, preserving contradictory
+implementation evidence. Publish its result through this app's runtime. Resolve
+annotations only after addressing them, or after an explicit user decision to
+accept a gap. Explain rejected changes
 and keep that explanation visible for final review.
 
 For a pending item that still needs an answer, record the exact question and leave

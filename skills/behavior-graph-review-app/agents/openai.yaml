@@ -1,0 +1,14 @@
+interface:
+  display_name: Behavior Graph Review App
+  short_description: Run graph review sessions across prompts
+  default_prompt: Use $behavior-graph-review-app to start or resume this project’s
+    graph review, coordinate the graph builder, and incorporate my feedback.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

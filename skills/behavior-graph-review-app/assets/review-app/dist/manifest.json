@@ -1,7 +1,7 @@
 {
   "schema_version": "behavior-review-app-dist/1",
   "entry": "index.html",
-  "source_digest": "8b55c65da59bf8a7cb6dd19bd66ed481eb8ce597536f41301013b7c4fe17e557",
+  "source_digest": "bc6be463642a52ef5dd0b34573a8bc74d5cd155e1a2689349480bc8067ca5cef",
   "files": {
     "app.f4613fade31578b1.js": "f4613fade31578b13d8c35be42b97e86f6bbcd1d301fd5722b4781a7f9edb56f",
     "config.json": "d13019215bdb8371825fc00fd85eb48a2299fcd2db99ea7f3f5a27858e17974f",

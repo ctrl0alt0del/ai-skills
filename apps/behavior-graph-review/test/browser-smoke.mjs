@@ -23,7 +23,7 @@ const artifacts = await buildArtifacts();
 const appModule = [...artifacts.keys()].find(name => /^app\./.test(name));
 const mainModule = [...artifacts.keys()].find(name => /^main\./.test(name));
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const graph = JSON.parse(await readFile(path.join(repoRoot, 'skills/behavior-knowledge-graph-builder/assets/example-graph.json'), 'utf8'));
+const graph = JSON.parse(await readFile(path.join(repoRoot, 'skills/behavior-graph-review-app/assets/example-graph.json'), 'utf8'));
 const fixtureModule = `
 import { mountReviewApp } from './${appModule}';
 const graph = ${JSON.stringify(graph)};
